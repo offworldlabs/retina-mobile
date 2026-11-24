@@ -2,12 +2,26 @@ export {
   api,
   createApiClient,
   setAuthTokenProvider,
+  setSessionEndedHandler,
   type ApiClient,
   type ApiClientOptions,
   type ApiMethod,
   type AuthTokenProvider,
   type CallOptions,
+  type SessionEndedHandler,
 } from './client';
+export {
+  consumeMagicLink,
+  fetchMe,
+  fetchMyNodes,
+  logout,
+  myNodesQuery,
+  previewMagicLink,
+  requestMagicLink,
+  type AccountUser,
+  type OwnerNode,
+  type OwnerNodeStatus,
+} from './auth';
 export {
   ApiError,
   HttpError,

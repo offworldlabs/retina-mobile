@@ -106,4 +106,20 @@ npm run api:check                            # used by CI
 
 `eas.json` has `development`, `preview` and `production` profiles, each setting `APP_ENV`. No cloud builds are set up yet.
 
-The bundle id and Android package are `fm.retina.app`, a placeholder. It is set once, as `APP_ID` in `app.config.ts`. The URL scheme is `retina`.
+The bundle id and Android package are `retina.fm`. It is set once, as `APP_ID` in `app.config.ts`. The URL scheme is `retina`.
+
+## Sign-in
+
+Sign-in is by email. The server mails a link, the link opens the app (`retina://auth/link/<token>` or `https://<app host>/auth/link/<token>`), and the app asks "Sign in as ...?". After the user confirms, the session token is kept in `expo-secure-store` and sent as a bearer token to the API host only. A 401 from the API means the session ended, and the app returns to sign-in.
+
+`https` App Links (Android) and Universal Links (iOS) are declared for `preview` and `production` only, from the API host of each. They stay unverified until the server serves `assetlinks.json` and `apple-app-site-association` (`MOBILE_ANDROID_CERT_SHA256`, `MOBILE_APPLE_TEAM_ID`). Until then the `retina://` scheme is the one that works.
+
+### Testing the sign-in link on Android
+
+A development build cannot cold-start from a link, so open the app first. Then send the link to the emulator or device:
+
+```sh
+adb shell am start -W -a android.intent.action.VIEW -d "retina://auth/link/<token>" retina.fm
+```
+
+In `development`, the token is in the server's mail log, in the link for the email address that asked to sign in (for example `user@example.com`).

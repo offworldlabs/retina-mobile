@@ -612,8 +612,8 @@ export interface paths {
          * @description Update simulation physics fractions.
          *
          *     Admin only, like the physics page on the admin console that calls it. The
-         *     GET beside it stays open because the fleet polls it with no credentials
-         *     (retina_simulation.orchestrator, deploy/fleet-entrypoint.sh).
+         *     GET beside it stays open where the fleet runs, because the fleet polls it
+         *     with no credentials (retina_simulation.orchestrator, deploy/fleet-entrypoint.sh).
          *
          *     Accepted keys: frac_anomalous, frac_drone, frac_dark (0.0–1.0 each).
          *     Sum of the three must not exceed 1.0 — the remainder is commercial aircraft.
@@ -1062,6 +1062,9 @@ export interface paths {
          *     A POST rather than the GET the mail links to: mail providers prefetch
          *     links, and a consuming GET would burn the token before the recipient ever
          *     clicked it. The mailed URL serves the page; the page calls this.
+         *
+         *     The console's session is the auth_token cookie. The app's, client "app",
+         *     is the `session_token` in the answer, with no cookie set.
          */
         post: operations["consume_magic_link_route_api_auth_magic_link_consume_post"];
         delete?: never;
@@ -1210,11 +1213,12 @@ export interface paths {
          *
          *     Ending the auth_token's session on the server, so that no copy of the
          *     cookie works either, and deleting the cookie is the whole job for a cookie
-         *     session. On the admin hostnames it is not: identity comes from an Access
-         *     assertion Cloudflare re-injects from a cookie on its own domain, which this
-         *     app can neither read nor delete, so the next request would be verified and
-         *     admitted again. The caller is handed the edge's logout path to visit
-         *     instead, because only a top-level navigation there clears it.
+         *     session. For the RETINA app's bearer, ending its session is. On the admin
+         *     hostnames it is not: identity comes from an Access assertion Cloudflare
+         *     re-injects from a cookie on its own domain, which this app can neither read
+         *     nor delete, so the next request would be verified and admitted again. The
+         *     caller is handed the edge's logout path to visit instead, because only a
+         *     top-level navigation there clears it.
          *
          *     Both credentials are cleared rather than whichever one authenticated this
          *     request: a person may hold an Access session and an auth_token at once.
@@ -3329,6 +3333,11 @@ export interface components {
             /** Email */
             email: string;
         };
+        /** AddressChangeConsume */
+        AddressChangeConsume: {
+            /** Token */
+            token: string;
+        };
         /** AddressChangeRequest */
         AddressChangeRequest: {
             /** Email */
@@ -4088,6 +4097,12 @@ export interface components {
         MagicLinkConsume: {
             /** Token */
             token: string;
+            /**
+             * Client
+             * @default web
+             * @enum {string}
+             */
+            client: "web" | "app";
         };
         /** MagicLinkRequest */
         MagicLinkRequest: {
@@ -4098,6 +4113,12 @@ export interface components {
             email: string;
             /** Next */
             next?: string | null;
+            /**
+             * Client
+             * @default web
+             * @enum {string}
+             */
+            client: "web" | "app";
         };
         /** NameEdit */
         NameEdit: {
@@ -4309,6 +4330,21 @@ export interface components {
              * Format: date-time
              */
             server_time: string;
+        };
+        /**
+         * SignedIn
+         * @description What redeeming a sign-in link answers.
+         */
+        SignedIn: {
+            /** User */
+            user: {
+                [key: string]: unknown;
+            };
+            /**
+             * Session Token
+             * @description Only for client `app`: the token of its session, to send as `Authorization: Bearer`. The console gets the auth_token cookie instead.
+             */
+            session_token?: string;
         };
         /**
          * Track
@@ -5153,7 +5189,9 @@ export interface operations {
     get_simulation_config_api_simulation_config_get: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "X-API-Key"?: string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -5166,6 +5204,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -5694,7 +5741,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["SignedIn"];
                 };
             };
             /** @description Validation Error */
@@ -6055,7 +6102,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["MagicLinkConsume"];
+                "application/json": components["schemas"]["AddressChangeConsume"];
             };
         };
         responses: {

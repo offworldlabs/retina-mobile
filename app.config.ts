@@ -1,7 +1,7 @@
 import type { ConfigContext, ExpoConfig } from 'expo/config';
 
-// Placeholder until the store identifiers are confirmed.
-const APP_ID = 'fm.retina.app';
+// Bundle id and Android package.
+const APP_ID = 'retina.fm';
 
 type AppEnv = 'development' | 'preview' | 'production';
 
@@ -23,6 +23,14 @@ const appEnv = resolveAppEnv(process.env.APP_ENV);
 const apiOverride = appEnv === 'development' ? process.env.RETINA_API_URL : undefined;
 const apiBaseUrl = apiOverride ? { ios: apiOverride, android: apiOverride } : API_BASE_URLS[appEnv];
 
+function appLinkHost(baseUrl: string): string | undefined {
+  const url = new URL(baseUrl);
+  return url.protocol === 'https:' ? url.hostname : undefined;
+}
+
+const iosLinkHost = apiOverride ? undefined : appLinkHost(apiBaseUrl.ios);
+const androidLinkHost = apiOverride ? undefined : appLinkHost(apiBaseUrl.android);
+
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: 'RETINA',
@@ -36,6 +44,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ios: {
     bundleIdentifier: APP_ID,
     icon: './assets/expo.icon',
+    ...(iosLinkHost && { associatedDomains: [`applinks:${iosLinkHost}`] }),
   },
   android: {
     package: APP_ID,
@@ -46,9 +55,20 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       monochromeImage: './assets/images/android-icon-monochrome.png',
     },
     predictiveBackGestureEnabled: false,
+    ...(androidLinkHost && {
+      intentFilters: [
+        {
+          action: 'VIEW',
+          autoVerify: true,
+          data: [{ scheme: 'https', host: androidLinkHost, pathPrefix: '/auth/link' }],
+          category: ['BROWSABLE', 'DEFAULT'],
+        },
+      ],
+    }),
   },
   plugins: [
     'expo-router',
+    ['expo-secure-store', { faceIDPermission: false }],
     [
       'expo-splash-screen',
       {

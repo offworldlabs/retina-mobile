@@ -1,6 +1,6 @@
 /// <reference types="jest" />
 import { apiBaseUrl, resolveApiBaseUrl } from '../../config/env';
-import { createApiClient, setAuthTokenProvider } from '../client';
+import { createApiClient, setAuthTokenProvider, setSessionEndedHandler } from '../client';
 import { HttpError, UnauthorizedError } from '../errors';
 import { fetchLeaderboard } from '../leaderboard';
 
@@ -24,11 +24,14 @@ function json(body: unknown, status = 200, headers: Record<string, string> = {})
   });
 }
 
-function stubbedClient(respond: () => Response, baseUrl = 'http://api.test') {
+function stubbedClient(
+  respond: (request: Request) => Response | Promise<Response>,
+  baseUrl = 'http://api.test',
+) {
   const requests: Request[] = [];
   const fetch = async (request: Request) => {
     requests.push(request);
-    return respond();
+    return respond(request);
   };
   return { requests, client: createApiClient({ baseUrl, fetch, isOffline: () => false }) };
 }
@@ -101,4 +104,41 @@ test('sends the bearer token to the API host only, and none without a provider',
     `${apiBaseUrl}/api/radar/leaderboard null`,
     'https://elsewhere.example/api/radar/leaderboard null',
   ]);
+});
+
+test('ends the session on a 401 once, and only for the token still in use', async () => {
+  let token = 'old-token';
+  let reached = () => {};
+  let release = () => {};
+  const sent = new Promise<void>((resolve) => (reached = resolve));
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const { client, requests } = stubbedClient(async (request) => {
+    if (request.url.endsWith('/nodes')) {
+      reached();
+      await held;
+    }
+    return json({ detail: 'Not authenticated' }, 401);
+  }, apiBaseUrl);
+  const ended: string[] = [];
+  setAuthTokenProvider(() => token);
+  setSessionEndedHandler((endedToken) => ended.push(endedToken));
+
+  const late = client.get('/api/auth/me/nodes').catch((e: unknown) => e);
+  await sent;
+  token = 'new-token';
+  const ownHeader = client.get('/api/auth/me', { headers: { Authorization: 'Bearer new-token' } });
+  await expect(ownHeader).rejects.toBeInstanceOf(UnauthorizedError);
+  expect(ended).toEqual([]);
+
+  const both = [client.get('/api/auth/me'), client.get('/api/auth/me/sessions')];
+  for (const error of await Promise.all(both.map((call) => call.catch((e: unknown) => e)))) {
+    expect(error).toBeInstanceOf(UnauthorizedError);
+  }
+  release();
+  expect(await late).toBeInstanceOf(UnauthorizedError);
+  expect(requests[0].headers.get('Authorization')).toBe('Bearer old-token');
+  expect(ended).toEqual(['new-token']);
+
+  setAuthTokenProvider(null);
+  setSessionEndedHandler(null);
 });

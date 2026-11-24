@@ -953,6 +953,18 @@
         "summary": "Get Simulation Config",
         "description": "Return current simulation physics configuration plus live object-type counts.",
         "operationId": "get_simulation_config_api_simulation_config_get",
+        "parameters": [
+          {
+            "name": "X-API-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "X-Api-Key"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -961,24 +973,34 @@
                 "schema": {}
               }
             }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
         }
       },
       "put": {
         "summary": "Put Simulation Config",
-        "description": "Update simulation physics fractions.\n\nAdmin only, like the physics page on the admin console that calls it. The\nGET beside it stays open because the fleet polls it with no credentials\n(retina_simulation.orchestrator, deploy/fleet-entrypoint.sh).\n\nAccepted keys: frac_anomalous, frac_drone, frac_dark (0.0–1.0 each).\nSum of the three must not exceed 1.0 — the remainder is commercial aircraft.\nfrac_adsb_outage (0.0–1.0) is deliberately OUTSIDE that sum: it is the\nfraction OF the ADS-B aircraft that go transponder-silent mid-flight,\northogonal to the spawn-type roll.\nfrac_live_dark (0.0–1.0) is likewise outside it: the share of the\naircraft the simulator mirrors from the live ADS-B feed that it casts\nas dark.  live_adsb_enabled (bool) pauses that feed.\nOptional: max_range_km (0 = auto, or 10–400), min_aircraft (1–500),\nmax_aircraft (1–500).\n\nAlso accepted — fleet scene keys, deliberately NO defaults (state.py's\nonly-if-set pattern: a fresh backend never ships these, so the fleet\ncontainer falls back to its own env; applying one is an orchestrator\nself-restart, see fleet-entrypoint.sh / retina_simulation.orchestrator):\nn_nodes (int, 4–100), dual_fraction (0.0–1.0).",
+        "description": "Update simulation physics fractions.\n\nAdmin only, like the physics page on the admin console that calls it. The\nGET beside it stays open where the fleet runs, because the fleet polls it\nwith no credentials (retina_simulation.orchestrator, deploy/fleet-entrypoint.sh).\n\nAccepted keys: frac_anomalous, frac_drone, frac_dark (0.0–1.0 each).\nSum of the three must not exceed 1.0 — the remainder is commercial aircraft.\nfrac_adsb_outage (0.0–1.0) is deliberately OUTSIDE that sum: it is the\nfraction OF the ADS-B aircraft that go transponder-silent mid-flight,\northogonal to the spawn-type roll.\nfrac_live_dark (0.0–1.0) is likewise outside it: the share of the\naircraft the simulator mirrors from the live ADS-B feed that it casts\nas dark.  live_adsb_enabled (bool) pauses that feed.\nOptional: max_range_km (0 = auto, or 10–400), min_aircraft (1–500),\nmax_aircraft (1–500).\n\nAlso accepted — fleet scene keys, deliberately NO defaults (state.py's\nonly-if-set pattern: a fresh backend never ships these, so the fleet\ncontainer falls back to its own env; applying one is an orchestrator\nself-restart, see fleet-entrypoint.sh / retina_simulation.orchestrator):\nn_nodes (int, 4–100), dual_fraction (0.0–1.0).",
         "operationId": "put_simulation_config_api_simulation_config_put",
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": true,
                 "type": "object",
+                "additionalProperties": true,
                 "title": "Body"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -1687,7 +1709,7 @@
           "auth"
         ],
         "summary": "Consume Magic Link Route",
-        "description": "Redeem a link and open a session.\n\nA POST rather than the GET the mail links to: mail providers prefetch\nlinks, and a consuming GET would burn the token before the recipient ever\nclicked it. The mailed URL serves the page; the page calls this.",
+        "description": "Redeem a link and open a session.\n\nA POST rather than the GET the mail links to: mail providers prefetch\nlinks, and a consuming GET would burn the token before the recipient ever\nclicked it. The mailed URL serves the page; the page calls this.\n\nThe console's session is the auth_token cookie. The app's, client \"app\",\nis the `session_token` in the answer, with no cookie set.",
         "operationId": "consume_magic_link_route_api_auth_magic_link_consume_post",
         "requestBody": {
           "content": {
@@ -1704,7 +1726,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/SignedIn"
+                }
               }
             }
           },
@@ -1945,7 +1969,7 @@
           "auth"
         ],
         "summary": "Logout",
-        "description": "End the session, and say so when the app cannot end it alone.\n\nEnding the auth_token's session on the server, so that no copy of the\ncookie works either, and deleting the cookie is the whole job for a cookie\nsession. On the admin hostnames it is not: identity comes from an Access\nassertion Cloudflare re-injects from a cookie on its own domain, which this\napp can neither read nor delete, so the next request would be verified and\nadmitted again. The caller is handed the edge's logout path to visit\ninstead, because only a top-level navigation there clears it.\n\nBoth credentials are cleared rather than whichever one authenticated this\nrequest: a person may hold an Access session and an auth_token at once.",
+        "description": "End the session, and say so when the app cannot end it alone.\n\nEnding the auth_token's session on the server, so that no copy of the\ncookie works either, and deleting the cookie is the whole job for a cookie\nsession. For the RETINA app's bearer, ending its session is. On the admin\nhostnames it is not: identity comes from an Access assertion Cloudflare\nre-injects from a cookie on its own domain, which this app can neither read\nnor delete, so the next request would be verified and admitted again. The\ncaller is handed the edge's logout path to visit instead, because only a\ntop-level navigation there clears it.\n\nBoth credentials are cleared rather than whichever one authenticated this\nrequest: a person may hold an Access session and an auth_token at once.",
         "operationId": "logout_api_auth_logout_post",
         "responses": {
           "200": {
@@ -2133,7 +2157,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/MagicLinkConsume"
+                "$ref": "#/components/schemas/AddressChangeConsume"
               }
             }
           },
@@ -6998,6 +7022,19 @@
         ],
         "title": "AddressChange"
       },
+      "AddressChangeConsume": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "title": "Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "title": "AddressChangeConsume"
+      },
       "AddressChangeRequest": {
         "properties": {
           "email": {
@@ -9064,6 +9101,15 @@
           "token": {
             "type": "string",
             "title": "Token"
+          },
+          "client": {
+            "type": "string",
+            "enum": [
+              "web",
+              "app"
+            ],
+            "title": "Client",
+            "default": "web"
           }
         },
         "type": "object",
@@ -9089,6 +9135,15 @@
               }
             ],
             "title": "Next"
+          },
+          "client": {
+            "type": "string",
+            "enum": [
+              "web",
+              "app"
+            ],
+            "title": "Client",
+            "default": "web"
           }
         },
         "type": "object",
@@ -9766,6 +9821,26 @@
           "server_time"
         ],
         "title": "RegisterResponse"
+      },
+      "SignedIn": {
+        "properties": {
+          "user": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "User"
+          },
+          "session_token": {
+            "type": "string",
+            "title": "Session Token",
+            "description": "Only for client `app`: the token of its session, to send as `Authorization: Bearer`. The console gets the auth_token cookie instead."
+          }
+        },
+        "type": "object",
+        "required": [
+          "user"
+        ],
+        "title": "SignedIn",
+        "description": "What redeeming a sign-in link answers."
       },
       "Track": {
         "properties": {

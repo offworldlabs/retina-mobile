@@ -76,6 +76,23 @@ export function setAuthTokenProvider(provider: AuthTokenProvider | null): void {
   authTokenProvider = provider;
 }
 
+export type SessionEndedHandler = (token: string) => void;
+
+let sessionEndedHandler: SessionEndedHandler | null = null;
+// The last token reported, so a burst of 401s to one session ends it once.
+let endedToken: string | null = null;
+
+/**
+ * Where sign-in learns that its session is over: a 401 to a request that carried the provider's
+ * token calls this with that token, once per token, and only while it is still the provider's
+ * current one. A late 401 for a token since replaced, a 401 to a request whose Authorization the
+ * caller set, and a 401 from another host say nothing about the current session and call nothing.
+ * The caller gets its UnauthorizedError either way.
+ */
+export function setSessionEndedHandler(handler: SessionEndedHandler | null): void {
+  sessionEndedHandler = handler;
+}
+
 // The base goes through the same Request constructor as the request, so both URLs are compared
 // in one form: kept as given by whatwg-fetch on device, WHATWG-normalized by undici in Node.
 function isUnderApiBaseUrl(request: Request): boolean {
@@ -83,12 +100,30 @@ function isUnderApiBaseUrl(request: Request): boolean {
 }
 
 // Called on the request the transport receives, so no middleware can move a signed request
-// to another URL afterwards.
-async function attachAuthToken(request: Request): Promise<void> {
+// to another URL afterwards. Returns the token it attached, or null when it attached none.
+async function attachAuthToken(request: Request): Promise<string | null> {
   const provider = authTokenProvider;
-  if (!provider || request.headers.has('Authorization') || !isUnderApiBaseUrl(request)) return;
+  if (!provider || request.headers.has('Authorization') || !isUnderApiBaseUrl(request)) {
+    return null;
+  }
   const token = await provider();
-  if (token) request.headers.set('Authorization', `Bearer ${token}`);
+  if (!token) return null;
+  request.headers.set('Authorization', `Bearer ${token}`);
+  return token;
+}
+
+// After a 401 to a request signed with `token`. The provider is asked again now, as the session
+// may have changed while the request was out.
+async function reportSessionEnded(token: string): Promise<void> {
+  try {
+    const currentToken = await authTokenProvider?.();
+    // Checked after the await: two 401s for one token can both be waiting on it.
+    if (currentToken !== token || token === endedToken || !sessionEndedHandler) return;
+    endedToken = token;
+    sessionEndedHandler(token);
+  } catch {
+    // The caller's UnauthorizedError is the answer, whatever the provider or the handler threw.
+  }
 }
 
 const DAY = '(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)';
@@ -158,7 +193,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
 
     const send = async (outgoing: Request): Promise<Response> => {
       // Outside the try: a token provider's own error is not a network failure.
-      await attachAuthToken(outgoing);
+      const signedWith = await attachAuthToken(outgoing);
       let response: Response;
       try {
         response = await transport(outgoing);
@@ -166,7 +201,13 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
         if (controller.signal.aborted) throw cause;
         throw new NetworkError(isOffline(), { cause });
       }
-      if (!response.ok) throw await httpErrorOf(response);
+      if (!response.ok) {
+        const error = await httpErrorOf(response);
+        if (error instanceof UnauthorizedError && signedWith !== null) {
+          await reportSessionEnded(signedWith);
+        }
+        throw error;
+      }
       answered = true;
       return response;
     };
