@@ -42,6 +42,7 @@ export {
   type RankStatus,
   type SystemConstantBound,
 } from './leaderboard';
+export { fetchMapNodes, type MapNodesBody } from './mapNodes';
 export { isOffline, useIsOffline } from './network';
 export { QueryProvider, queryClient } from './query';
 export type { components, operations, paths } from './schema.gen';

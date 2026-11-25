@@ -22,6 +22,7 @@
     "api:check": "node scripts/openapi.mjs check"
   },
   "dependencies": {
+    "@maplibre/maplibre-react-native": "^11.5.1",
     "@tanstack/react-query": "^5.108.1",
     "expo": "~58.1.0",
     "expo-constants": "~58.0.16",
