@@ -11,6 +11,7 @@ import {
   type FeedBox,
   type LiveAircraft,
 } from './feed';
+import { createAircraftIdentity } from './identity';
 
 /**
  * - `live`: the socket is open.
@@ -21,7 +22,7 @@ import {
 export type LiveFeedStatus = 'connecting' | 'live' | 'fallback' | 'paused';
 
 export type LiveFeedState = {
-  /** The aircraft of the last frame, by hex. */
+  /** The aircraft of the last frame by id (identity.ts), which the server's renames keep. */
   aircraft: ReadonlyMap<string, LiveAircraft>;
   /** The same aircraft as one GeoJSON source. */
   collection: AircraftCollection;
@@ -31,6 +32,12 @@ export type LiveFeedState = {
   clipped: boolean;
   /** When the last frame arrived (ms since epoch); null before the first. */
   lastFrameAt: number | null;
+  /**
+   * The id that any id, hex or other key of an aircraft is shown under now, which follows two ids
+   * the server turns out to use for one aircraft onto one; a key the feed has not seen comes back
+   * as it is. Absent before any feed has run, when every key is its own id.
+   */
+  idFor?: (key: string) => string;
 };
 
 export type LiveFeedOptions = {
@@ -76,7 +83,8 @@ function parseMessage(data: unknown): unknown {
  * the socket is not open; stop() ends both, and nothing reopens after it. A dropped socket is
  * reopened on a backoff that only a frame on the new socket resets, so a server that accepts and
  * then closes is asked less and less often. Each frame replaces the aircraft set and calls
- * onUpdate once.
+ * onUpdate once. Which entries are one aircraft is kept across frames (identity.ts): stop() keeps
+ * it, as its keys age out on their own, and a new feed starts with none.
  */
 export function createLiveFeed(options: LiveFeedOptions): LiveFeed {
   const {
@@ -109,6 +117,7 @@ export function createLiveFeed(options: LiveFeedOptions): LiveFeed {
   let nextRequest = 0;
   let latestSettled = 0;
 
+  const identity = createAircraftIdentity();
   let aircraft: ReadonlyMap<string, LiveAircraft> = new Map();
   let collection = toFeatureCollection([]);
   let clipped = false;
@@ -116,7 +125,15 @@ export function createLiveFeed(options: LiveFeedOptions): LiveFeed {
   let status: LiveFeedStatus = 'paused';
 
   const emit = () =>
-    onUpdate({ aircraft, collection, count: aircraft.size, status, clipped, lastFrameAt });
+    onUpdate({
+      aircraft,
+      collection,
+      count: aircraft.size,
+      status,
+      clipped,
+      lastFrameAt,
+      idFor: identity.idFor,
+    });
 
   function currentStatus(): LiveFeedStatus {
     if (!started) return 'paused';
@@ -132,10 +149,10 @@ export function createLiveFeed(options: LiveFeedOptions): LiveFeed {
   }
 
   function takeFrame(frame: Frame): void {
-    aircraft = new Map(frame.aircraft.map((a) => [a.hex, a]));
-    collection = toFeatureCollection(frame.aircraft);
-    clipped = frame.clipped;
     lastFrameAt = Date.now();
+    aircraft = identity.resolve(frame.aircraft, lastFrameAt);
+    collection = toFeatureCollection(aircraft);
+    clipped = frame.clipped;
     status = currentStatus();
     emit();
   }

@@ -22,6 +22,11 @@ function subscribeAppState(onChange: () => void): () => void {
 
 const appIsActive = () => AppState.currentState === 'active';
 
+/** Whether the app is in the foreground, kept current as it comes and goes. */
+export function useAppActive(): boolean {
+  return useSyncExternalStore(subscribeAppState, appIsActive);
+}
+
 /**
  * The live aircraft in `box`, while `enabled` and the app is in the foreground. Going to the
  * background stops the feed, socket and poll alike, and coming back starts it afresh; the screen
@@ -30,7 +35,7 @@ const appIsActive = () => AppState.currentState === 'active';
  * replaces them.
  */
 export function useLiveAircraft(box: FeedBox | null, enabled: boolean): LiveFeedState {
-  const foreground = useSyncExternalStore(subscribeAppState, appIsActive);
+  const foreground = useAppActive();
   const active = enabled && foreground;
   const [state, setState] = useState(PAUSED);
   const feedRef = useRef<LiveFeed | null>(null);

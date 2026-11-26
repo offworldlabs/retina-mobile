@@ -8,7 +8,10 @@ import type { LiveAircraft } from './feed';
 import type { MapNode } from './nodes';
 
 export type AircraftSheetProps = {
-  hex: string | null;
+  /** The selected aircraft's id (identity.ts), which the server's renames keep; null renders
+   *  nothing. */
+  id: string | null;
+  /** The aircraft under that id in the last frame; undefined once it has left the view. */
   aircraft: LiveAircraft | undefined;
   nodesByRef: ReadonlyMap<string, MapNode>;
   onClose: () => void;
@@ -116,9 +119,9 @@ function SeenBy({
   );
 }
 
-export function AircraftSheet({ hex, aircraft, nodesByRef, onClose, footer }: AircraftSheetProps) {
+export function AircraftSheet({ id, aircraft, nodesByRef, onClose, footer }: AircraftSheetProps) {
   const { colors, spacing, radius } = useTheme();
-  if (hex === null) return null;
+  if (id === null) return null;
   const callsign = aircraft?.flight?.trim();
   return (
     <View
@@ -147,8 +150,9 @@ export function AircraftSheet({ hex, aircraft, nodesByRef, onClose, footer }: Ai
             <ThemedText variant="title" numberOfLines={1}>
               {callsign || 'No callsign'}
             </ThemedText>
+            {/* The hex it flies under now, which a rename changes while the id stays. */}
             <ThemedText variant="mono" color="secondary">
-              {hex.toUpperCase()}
+              {(aircraft?.hex ?? id).toUpperCase()}
             </ThemedText>
           </View>
           <Pressable

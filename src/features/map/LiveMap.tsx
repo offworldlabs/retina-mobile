@@ -11,7 +11,7 @@ import {
 } from '@maplibre/maplibre-react-native';
 import { useIsFocused } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
-import { useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Linking,
   type NativeSyntheticEvent,
@@ -34,12 +34,17 @@ import {
   DEFAULT_BASEMAP,
   basemapAttribution,
   basemapStyle,
+  loadBasemapChoice,
+  saveBasemapChoice,
   type BasemapId,
 } from './basemap';
 import { feedBoxOf, type FeedBox } from './feed';
 import type { LiveFeedState } from './liveFeed';
-import { useMapNodes } from './nodes';
+import { NodeSheet } from './NodeSheet';
+import { nodesAtSite, useMapNodes } from './nodes';
+import { nearestFeature } from './pick';
 import { useLiveAircraft } from './useLiveAircraft';
+import { useSmoothedAircraft } from './useSmoothedAircraft';
 
 // The web map's default view.
 const INITIAL_VIEW: InitialViewState = { center: [-82.39, 34.85], zoom: 8 };
@@ -70,12 +75,24 @@ function nextBasemap(current: BasemapId): BasemapId {
   return BASEMAPS[(BASEMAPS.indexOf(current) + 1) % BASEMAPS.length];
 }
 
-function aircraftAt(event: NativeSyntheticEvent<PressEventWithFeatures>): string | null {
-  for (const feature of event.nativeEvent.features) {
-    const hex: unknown = feature.properties?.hex;
-    if (typeof hex === 'string' && hex !== '') return hex;
-  }
-  return null;
+type SourcePressEvent = NativeSyntheticEvent<PressEventWithFeatures>;
+
+/** What a tap has opened: one aircraft's card or one node's, never both. */
+type Selection = { kind: 'aircraft'; id: string } | { kind: 'node'; ref: string } | null;
+
+/**
+ * The `key` property of the pressed feature nearest the finger, or null when none carries one.
+ * The hitbox is 44 points wide and can hold several features, listed in draw order; the one
+ * nearest the finger is the one it meant.
+ */
+function nearestPressed(event: SourcePressEvent, key: 'id' | 'ref'): string | null {
+  const { lngLat, features } = event.nativeEvent;
+  const named = features.filter((feature) => {
+    const value: unknown = feature.properties?.[key];
+    return typeof value === 'string' && value !== '';
+  });
+  const value: unknown = nearestFeature(lngLat, named)?.properties?.[key];
+  return typeof value === 'string' ? value : null;
 }
 
 function openLink(url: string) {
@@ -242,10 +259,70 @@ function Attribution({ basemap, style }: { basemap: BasemapId; style?: ViewStyle
   );
 }
 
+type AircraftSourceProps = {
+  feed: LiveFeedState;
+  /** Whether the map screen is focused; aircraft move between frames only then. */
+  active: boolean;
+  /** The id of the aircraft whose card is open, ringed on the map. */
+  selectedId: string | null;
+  onPress: (event: SourcePressEvent) => void;
+};
+
 /**
- * The live map: every aircraft in view from the live feed, drawn by one GeoJSON source, over
- * the public nodes and the basemap the theme or the user picked. Tapping an aircraft opens its
- * details; tapping the map elsewhere closes them.
+ * The aircraft as one GeoJSON source, at the positions smoothed between the feed's frames. It is
+ * a component of its own so that each smoothing step re-renders this source alone, not the screen
+ * around it.
+ */
+const AircraftSource = memo(function AircraftSource({
+  feed,
+  active,
+  selectedId,
+  onPress,
+}: AircraftSourceProps) {
+  const { colors } = useTheme();
+  const collection = useSmoothedAircraft(feed, active);
+  return (
+    <GeoJSONSource id="aircraft" data={collection} onPress={onPress}>
+      <Layer
+        id={SELECTED_LAYER}
+        type="circle"
+        beforeId={AIRCRAFT_LAYER}
+        filter={['==', ['get', 'id'], selectedId ?? '']}
+        paint={{
+          'circle-radius': 20,
+          'circle-color': colors.accent,
+          'circle-opacity': 0.22,
+          'circle-stroke-color': colors.accent,
+          'circle-stroke-width': 2,
+        }}
+      />
+      <Layer
+        id={AIRCRAFT_LAYER}
+        type="symbol"
+        layout={{
+          'icon-image': AIRCRAFT_ICON,
+          'icon-size': ['interpolate', ['linear'], ['zoom'], 4, 0.75, 10, 1.1],
+          'icon-rotate': ['coalesce', ['get', 'track'], 0],
+          'icon-rotation-alignment': 'map',
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+        }}
+        paint={{
+          'icon-color': colors.accent,
+          'icon-halo-color': colors.bgCard,
+          'icon-halo-width': 1.5,
+        }}
+      />
+    </GeoJSONSource>
+  );
+});
+
+/**
+ * The live map: every aircraft in view from the live feed, drawn by one GeoJSON source and moved
+ * smoothly between frames, over the public nodes and the basemap the theme or the user picked.
+ * A tap opens the card of the aircraft nearest the finger or, with no aircraft under it, of the
+ * node nearest it; an aircraft and a node under one finger open the aircraft. The card stays on
+ * its aircraft through the server's renames. Tapping the map elsewhere closes the card.
  */
 export function LiveMap() {
   const { scheme, colors, spacing } = useTheme();
@@ -254,14 +331,30 @@ export function LiveMap() {
   const offline = useIsOffline();
   const mapRef = useRef<MapRef>(null);
 
-  // The basemap follows the theme until one is picked by hand. Cycling back onto the theme's
-  // own default hands it back to the theme, so one stray tap does not stop it following.
-  const [handPicked, setHandPicked] = useState<BasemapId | null>(null);
+  // The basemap follows the theme until one is picked by hand, and a pick is kept on the device
+  // across restarts. Cycling back onto the theme's own default hands it back to the theme and
+  // forgets the pick, so one stray tap does not stop it following. Undefined while the saved
+  // pick is read: the map waits for it, so it never opens on the theme's basemap only to swap.
+  const [handPicked, setHandPicked] = useState<BasemapId | null | undefined>(undefined);
+  useEffect(() => {
+    let mounted = true;
+    const restore = (choice: BasemapId | null) => {
+      if (mounted) setHandPicked(choice);
+    };
+    // The read is not meant to fail; if it ever does, the map still opens, on the theme's own.
+    loadBasemapChoice().then(restore, () => restore(null));
+    return () => {
+      mounted = false;
+    };
+  }, []);
   const themeBasemap = DEFAULT_BASEMAP[scheme];
   const basemap = handPicked ?? themeBasemap;
   const cycleBasemap = () => {
     const next = nextBasemap(basemap);
-    setHandPicked(next === themeBasemap ? null : next);
+    const pick = next === themeBasemap ? null : next;
+    setHandPicked(pick);
+    // The device's store writes in the order it is asked, so quick taps leave the last pick.
+    void saveBasemapChoice(pick);
   };
   const mapStyle = useMemo(() => basemapStyle(basemap, cartoApiKey, scheme), [basemap, scheme]);
 
@@ -281,13 +374,44 @@ export function LiveMap() {
   const feed = useLiveAircraft(box, focused);
   const nodes = useMapNodes(focused);
 
-  const [selectedHex, setSelectedHex] = useState<string | null>(null);
-  const selectAircraft = (event: NativeSyntheticEvent<PressEventWithFeatures>) => {
-    // The press is the aircraft's alone; without this the map's own press clears it again.
+  // The map hands a tap to one source only, the one with a feature under the finger whose layer is
+  // drawn on top, and the aircraft layers sit over the nodes', so an aircraft and a node under one
+  // finger open the aircraft. Each press stops there: passed on, the map's own press would close
+  // the card it just opened. The aircraft press keeps one identity so the memoized source above
+  // does not re-render for it.
+  const [selection, setSelection] = useState<Selection>(null);
+  // An aircraft is selected by the id it had when tapped, read through the feed's identity on every
+  // render, so the ring and the card follow it when the server's ids for it turn out to be one
+  // aircraft. The id it resolves to is kept from then on, so the selection outlives the old id.
+  const tappedId = selection?.kind === 'aircraft' ? selection.id : null;
+  const selectedId = tappedId === null ? null : (feed.idFor?.(tappedId) ?? tappedId);
+  if (selectedId !== null && selectedId !== tappedId) {
+    setSelection({ kind: 'aircraft', id: selectedId });
+  }
+  const selectedRef = selection?.kind === 'node' ? selection.ref : null;
+  const selectAircraft = useCallback((event: SourcePressEvent) => {
     event.stopPropagation();
-    const hex = aircraftAt(event);
-    if (hex) setSelectedHex(hex);
+    const id = nearestPressed(event, 'id');
+    if (id !== null) setSelection({ kind: 'aircraft', id });
+  }, []);
+  const selectNode = (event: SourcePressEvent) => {
+    event.stopPropagation();
+    const ref = nearestPressed(event, 'ref');
+    if (ref !== null) setSelection({ kind: 'node', ref });
   };
+  const closeCard = () => setSelection(null);
+  const site = useMemo(
+    () => (selectedRef === null ? [] : nodesAtSite(nodes.nodes, selectedRef)),
+    [nodes.nodes, selectedRef],
+  );
+
+  // Until the saved basemap is known, only the screen's background shows: no map to open on the
+  // wrong basemap, and no switch to tap before the saved pick lands.
+  if (handPicked === undefined) {
+    return <View style={{ flex: 1, backgroundColor: colors.bgPrimary }} />;
+  }
+
+  const cardFooter = <Attribution basemap={basemap} style={{ paddingHorizontal: 0 }} />;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bgPrimary }}>
@@ -310,11 +434,11 @@ export function LiveMap() {
           const { bounds } = event.nativeEvent;
           if (Array.isArray(bounds) && bounds.length === 4) showBounds(bounds);
         }}
-        onPress={() => setSelectedHex(null)}
+        onPress={closeCard}
       >
         <Camera initialViewState={INITIAL_VIEW} />
         <Images images={MAP_IMAGES} />
-        <GeoJSONSource id="nodes" data={nodes.collection}>
+        <GeoJSONSource id="nodes" data={nodes.collection} onPress={selectNode}>
           <Layer
             id={NODES_LAYER}
             type="circle"
@@ -332,38 +456,12 @@ export function LiveMap() {
             }}
           />
         </GeoJSONSource>
-        <GeoJSONSource id="aircraft" data={feed.collection} onPress={selectAircraft}>
-          <Layer
-            id={SELECTED_LAYER}
-            type="circle"
-            beforeId={AIRCRAFT_LAYER}
-            filter={['==', ['get', 'hex'], selectedHex ?? '']}
-            paint={{
-              'circle-radius': 20,
-              'circle-color': colors.accent,
-              'circle-opacity': 0.22,
-              'circle-stroke-color': colors.accent,
-              'circle-stroke-width': 2,
-            }}
-          />
-          <Layer
-            id={AIRCRAFT_LAYER}
-            type="symbol"
-            layout={{
-              'icon-image': AIRCRAFT_ICON,
-              'icon-size': ['interpolate', ['linear'], ['zoom'], 4, 0.75, 10, 1.1],
-              'icon-rotate': ['coalesce', ['get', 'track'], 0],
-              'icon-rotation-alignment': 'map',
-              'icon-allow-overlap': true,
-              'icon-ignore-placement': true,
-            }}
-            paint={{
-              'icon-color': colors.accent,
-              'icon-halo-color': colors.bgCard,
-              'icon-halo-width': 1.5,
-            }}
-          />
-        </GeoJSONSource>
+        <AircraftSource
+          feed={feed}
+          active={focused}
+          selectedId={selectedId}
+          onPress={selectAircraft}
+        />
       </MapView>
 
       {/* The status bar sits over the map, whose tiles can be light in the dark theme. */}
@@ -390,15 +488,16 @@ export function LiveMap() {
             <BasemapButton basemap={basemap} onPress={cycleBasemap} />
           </View>
           <View pointerEvents="box-none" style={{ flex: 1, justifyContent: 'flex-end' }}>
-            {selectedHex === null && <Attribution basemap={basemap} />}
+            {selection === null && <Attribution basemap={basemap} />}
           </View>
           <AircraftSheet
-            hex={selectedHex}
-            aircraft={selectedHex ? feed.aircraft.get(selectedHex) : undefined}
+            id={selectedId}
+            aircraft={selectedId === null ? undefined : feed.aircraft.get(selectedId)}
             nodesByRef={nodes.byRef}
-            onClose={() => setSelectedHex(null)}
-            footer={<Attribution basemap={basemap} style={{ paddingHorizontal: 0 }} />}
+            onClose={closeCard}
+            footer={cardFooter}
           />
+          <NodeSheet nodeRef={selectedRef} site={site} onClose={closeCard} footer={cardFooter} />
         </View>
       </SafeAreaView>
     </View>
