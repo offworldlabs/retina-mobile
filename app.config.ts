@@ -60,7 +60,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         {
           action: 'VIEW',
           autoVerify: true,
-          data: [{ scheme: 'https', host: androidLinkHost, pathPrefix: '/auth/link' }],
+          data: [
+            { scheme: 'https', host: androidLinkHost, pathPrefix: '/auth/link' },
+            { scheme: 'https', host: androidLinkHost, pathPrefix: '/auth/email' },
+          ],
           category: ['BROWSABLE', 'DEFAULT'],
         },
       ],

@@ -11,6 +11,27 @@ export {
   type SessionEndedHandler,
 } from './client';
 export {
+  confirmEmailChange,
+  createMyKey,
+  deleteMyAccount,
+  meQuery,
+  myAccessQuery,
+  myKeysQuery,
+  mySessionsQuery,
+  previewEmailChange,
+  requestEmailChange,
+  revokeMyKey,
+  revokeMySession,
+  revokeOtherSessions,
+  updateMyName,
+  type AccountSession,
+  type ApiAccess,
+  type ApiAccessContributor,
+  type ApiAccessLimits,
+  type ApiKey,
+  type CreatedApiKey,
+} from './account';
+export {
   consumeMagicLink,
   fetchMe,
   fetchMyNodes,

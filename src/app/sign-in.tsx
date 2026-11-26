@@ -5,6 +5,7 @@ import { View } from 'react-native';
 import { requestMagicLink, userMessage } from '@/api';
 import { useAuth } from '@/auth';
 import { Button, ThemedText } from '@/components';
+import { releasedNodesMessage } from '@/features/account/model';
 import { AuthScreen, EmailField, isValidEmail } from '@/features/auth';
 import { Notice } from '@/features/network';
 import { useTheme } from '@/theme';
@@ -15,7 +16,7 @@ export default function SignInScreen() {
   const router = useRouter();
   const { spacing } = useTheme();
   const { state } = useAuth();
-  const { reason } = useLocalSearchParams<{ reason?: string }>();
+  const { reason, released } = useLocalSearchParams<{ reason?: string; released?: string }>();
   const [email, setEmail] = useState('');
   const [attempted, setAttempted] = useState(false);
   const [sending, setSending] = useState(false);
@@ -112,7 +113,9 @@ export default function SignInScreen() {
 
   return (
     <AuthScreen title="Sign in">
-      {reason === 'session-ended' ? (
+      {reason === 'account-deleted' ? (
+        <Notice text={`Account deleted. ${releasedNodesMessage(Number(released))}`} />
+      ) : reason === 'session-ended' ? (
         <Notice tone="warning" text="Your session ended. Sign in again." />
       ) : null}
       <EmailField

@@ -1,14 +1,33 @@
-import { useRouter } from 'expo-router';
-import { ActivityIndicator, Alert, View } from 'react-native';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback } from 'react';
+import { ActivityIndicator, Alert, AppState, View } from 'react-native';
 
 import { useAuth } from '@/auth';
 import { Button, Placeholder, Screen, ThemedText } from '@/components';
+import { Card } from '@/features/account/Card';
+import { DeleteSection } from '@/features/account/DeleteSection';
+import { EmailSection } from '@/features/account/EmailSection';
+import { ProfileSection } from '@/features/account/ProfileSection';
+import { SessionsSection } from '@/features/account/SessionsSection';
 import { useTheme } from '@/theme';
 
 export default function AccountScreen() {
   const router = useRouter();
-  const { state, signOut } = useAuth();
-  const { colors, spacing, radius } = useTheme();
+  const { state, signOut, refreshAccount } = useAuth();
+  const { colors } = useTheme();
+
+  // The address can change outside the app, by a link opened in the browser, so the account is
+  // read again whenever this tab comes into view, and whenever the app comes back to the
+  // foreground while it is in view.
+  useFocusEffect(
+    useCallback(() => {
+      void refreshAccount();
+      const subscription = AppState.addEventListener('change', (status) => {
+        if (status === 'active') void refreshAccount();
+      });
+      return () => subscription.remove();
+    }, [refreshAccount]),
+  );
 
   if (state.status === 'loading') {
     return (
@@ -45,24 +64,22 @@ export default function AccountScreen() {
 
   return (
     <Screen title="Account">
-      <View
-        style={{
-          padding: spacing.xl,
-          gap: spacing.md,
-          borderRadius: radius.md,
-          borderWidth: 1,
-          borderColor: colors.border,
-          backgroundColor: colors.bgCard,
-        }}
-      >
-        <ThemedText variant="label" color="secondary">
-          Signed in as
+      <ProfileSection email={state.email} />
+      <EmailSection email={state.email} />
+      <SessionsSection email={state.email} />
+      <Card title="API access">
+        <ThemedText color="secondary">
+          Keys let your own scripts and tools read network data through the data API.
         </ThemedText>
-        <ThemedText variant="heading" selectable>
-          {state.email}
-        </ThemedText>
-      </View>
+        <Button
+          variant="secondary"
+          label="API access"
+          accessibilityLabel="Open API access"
+          onPress={() => router.push('/account/api-access')}
+        />
+      </Card>
       <Button variant="secondary" label="Sign out" onPress={confirmSignOut} />
+      <DeleteSection email={state.email} />
     </Screen>
   );
 }
