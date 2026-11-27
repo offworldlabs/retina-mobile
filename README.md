@@ -114,6 +114,8 @@ Sign-in is by email. The server mails a link, the link opens the app (`retina://
 
 `https` App Links (Android) and Universal Links (iOS) are declared for `preview` and `production` only, from the API host of each. They stay unverified until the server serves `assetlinks.json` and `apple-app-site-association` (`MOBILE_ANDROID_CERT_SHA256`, `MOBILE_APPLE_TEAM_ID`). Until then the `retina://` scheme is the one that works.
 
+The link mailed when the sign-in address is changed opens `src/app/auth/email/[token].tsx`, as `retina://auth/email/<token>` and, on Android `preview` and `production` builds, as an App Link on `/auth/email`. It asks "Use ... to sign in to RETINA?" and changes the address only after a tap. On iOS the `https` form stays in the browser until the server's `apple-app-site-association` lists `/auth/email/*`.
+
 ### Testing the sign-in link on Android
 
 A development build cannot cold-start from a link, so open the app first. Then send the link to the emulator or device:
