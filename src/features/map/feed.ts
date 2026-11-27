@@ -76,12 +76,17 @@ export type LiveAircraft = {
   n_nodes?: number;
   contributing_node_refs?: string[];
   seen?: number;
+  // The other keys the server names the aircraft by, which identity.ts links into one aircraft. The
+  // simulator's ground_truth_hex is not one of them and is left out (identity.ts says why).
+  adsb_hex?: string;
+  predecessor_hex?: string;
 };
 
 type Entry = Record<string, unknown>;
 
 const STRING_FIELDS = ['flight', 'squawk', 'type', 'node_ref', 'position_source'] as const;
 const NUMBER_FIELDS = ['alt_baro', 'alt_m', 'gs', 'track', 'n_nodes', 'seen'] as const;
+const KEY_FIELDS = ['adsb_hex', 'predecessor_hex'] as const;
 
 function isRecord(value: unknown): value is Entry {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -108,6 +113,10 @@ function aircraftOf(entry: unknown): LiveAircraft | null {
     const value = entry[field];
     if (isFiniteNumber(value)) aircraft[field] = value;
   }
+  for (const field of KEY_FIELDS) {
+    const value = entry[field];
+    if (typeof value === 'string' && value !== '') aircraft[field] = value;
+  }
   if (typeof entry.multinode === 'boolean') aircraft.multinode = entry.multinode;
   const refs = entry.contributing_node_refs;
   if (Array.isArray(refs) && refs.every((ref) => typeof ref === 'string')) {
@@ -117,23 +126,20 @@ function aircraftOf(entry: unknown): LiveAircraft | null {
 }
 
 /**
- * A socket frame or an aircraft-live.json body as the aircraft in it, one per hex (a repeated hex
- * keeps its last entry), and whether the server clipped the box it was asked for. Null for
- * anything without an `aircraft` array. An entry without a hex or a usable position is dropped,
- * and an optional field of the wrong type is left out.
+ * A socket frame or an aircraft-live.json body as its entries, in order, and whether the server
+ * clipped the box it was asked for. Several entries can be one aircraft; identity.ts tells which.
+ * Null for anything without an `aircraft` array. An entry without a hex or a usable position is
+ * dropped, and an optional field of the wrong type or an empty key is left out.
  */
 export function parseFrame(data: unknown): { aircraft: LiveAircraft[]; clipped: boolean } | null {
   if (!isRecord(data) || !Array.isArray(data.aircraft)) return null;
-  const byHex = new Map<string, LiveAircraft>();
+  const aircraft: LiveAircraft[] = [];
   for (const entry of data.aircraft) {
-    const aircraft = aircraftOf(entry);
-    if (aircraft) byHex.set(aircraft.hex, aircraft);
+    const parsed = aircraftOf(entry);
+    if (parsed) aircraft.push(parsed);
   }
   const { viewport } = data;
-  return {
-    aircraft: [...byHex.values()],
-    clipped: isRecord(viewport) && viewport.clipped === true,
-  };
+  return { aircraft, clipped: isRecord(viewport) && viewport.clipped === true };
 }
 
 // Minimal GeoJSON shapes, enough for what the map sources take.
@@ -141,8 +147,10 @@ export type PointGeometry = { type: 'Point'; coordinates: [lon: number, lat: num
 export type PointFeature<P> = { type: 'Feature'; geometry: PointGeometry; properties: P };
 export type PointCollection<P> = { type: 'FeatureCollection'; features: PointFeature<P>[] };
 
-/** What the aircraft layer reads from a feature. `alt` is in feet. */
+/** What the aircraft layer reads from a feature. `id` is the aircraft's id (identity.ts), which
+ *  the server's renames keep; `alt` is in feet. */
 export type AircraftProps = {
+  id: string;
   hex: string;
   track: number | null;
   callsign: string | null;
@@ -159,14 +167,17 @@ function altitudeFeet(aircraft: LiveAircraft): number | null {
   return null;
 }
 
-/** The aircraft as one GeoJSON source: a point per aircraft, at [lon, lat]. */
-export function toFeatureCollection(aircraft: readonly LiveAircraft[]): AircraftCollection {
+/** The aircraft by id as one GeoJSON source: a point per aircraft, at [lon, lat]. */
+export function toFeatureCollection(
+  aircraft: Iterable<readonly [id: string, aircraft: LiveAircraft]>,
+): AircraftCollection {
   return {
     type: 'FeatureCollection',
-    features: aircraft.map((a) => ({
+    features: Array.from(aircraft, ([id, a]) => ({
       type: 'Feature',
       geometry: { type: 'Point', coordinates: [a.lon, a.lat] },
       properties: {
+        id,
         hex: a.hex,
         track: a.track ?? null,
         callsign: a.flight?.trim() || null,

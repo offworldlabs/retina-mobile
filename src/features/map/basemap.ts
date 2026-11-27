@@ -1,4 +1,5 @@
 import type { StyleSpecification } from '@maplibre/maplibre-react-native';
+import * as SecureStore from 'expo-secure-store';
 
 import { palette, type ColorScheme } from '@/theme/tokens';
 
@@ -15,6 +16,52 @@ export const DEFAULT_BASEMAP: Record<ColorScheme, BasemapId> = {
   light: 'positron',
   dark: 'voyager',
 };
+
+const CHOICE_KEY = 'retina.map.basemap';
+// The same keychain class as the session (src/auth/tokenStore.ts): readable after the first unlock
+// and never carried to another device by a backup.
+const CHOICE_OPTIONS: SecureStore.SecureStoreOptions = {
+  keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
+};
+
+let choiceCalls: Promise<unknown> = Promise.resolve();
+
+// One SecureStore call at a time, in the order made, as tokenStore does: the native side does not
+// promise to keep two in order, and an older choice landing last would come back next start.
+function serial<T>(operation: () => Promise<T>): Promise<T> {
+  const result = choiceCalls.then(operation);
+  choiceCalls = result.catch(() => undefined);
+  return result;
+}
+
+function isBasemapId(value: unknown): value is BasemapId {
+  return typeof value === 'string' && (BASEMAPS as readonly string[]).includes(value);
+}
+
+/**
+ * The basemap picked by hand on an earlier run, or null when none was (the map then follows the
+ * theme). A stored name this version does not know reads as null, as does a store that cannot be
+ * read: the choice is a convenience, so it never stops the map. Never rejects.
+ */
+export function loadBasemapChoice(): Promise<BasemapId | null> {
+  return serial(() => SecureStore.getItemAsync(CHOICE_KEY, CHOICE_OPTIONS)).then(
+    (stored) => (isBasemapId(stored) ? stored : null),
+    () => null,
+  );
+}
+
+/**
+ * Keeps the basemap picked by hand for the next run; null forgets it, so the next run follows the
+ * theme. Calls land in the order made, so the last choice wins. A write that fails is dropped
+ * without a word; the map keeps showing the choice for this run. Never rejects.
+ */
+export function saveBasemapChoice(choice: BasemapId | null): Promise<void> {
+  return serial(() =>
+    choice === null
+      ? SecureStore.deleteItemAsync(CHOICE_KEY, CHOICE_OPTIONS)
+      : SecureStore.setItemAsync(CHOICE_KEY, choice, CHOICE_OPTIONS),
+  ).catch(() => undefined);
+}
 
 /** The web map's names where it has one. */
 export const BASEMAP_LABELS: Record<BasemapId, string> = {
