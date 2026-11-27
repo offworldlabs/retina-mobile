@@ -28,6 +28,11 @@ function appLinkHost(baseUrl: string): string | undefined {
   return url.protocol === 'https:' ? url.hostname : undefined;
 }
 
+// CARTO basemap key. Tile requests come from the device, so the key ships in the app
+// bundle the same way the web map ships its key in the page. Only a key scoped to
+// basemap tiles may be used here. Without one, CARTO serves watermarked tiles.
+const cartoApiKey = process.env.EXPO_PUBLIC_CARTO_API_KEY?.trim() ?? '';
+
 const iosLinkHost = apiOverride ? undefined : appLinkHost(apiBaseUrl.ios);
 const androidLinkHost = apiOverride ? undefined : appLinkHost(apiBaseUrl.android);
 
@@ -68,6 +73,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   plugins: [
     'expo-router',
+    '@maplibre/maplibre-react-native',
     ['expo-secure-store', { faceIDPermission: false }],
     [
       'expo-splash-screen',
@@ -83,5 +89,5 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     typedRoutes: true,
     reactCompiler: true,
   },
-  extra: { appEnv, apiBaseUrl },
+  extra: { appEnv, apiBaseUrl, cartoApiKey },
 });
