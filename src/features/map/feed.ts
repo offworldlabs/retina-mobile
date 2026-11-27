@@ -130,16 +130,23 @@ function aircraftOf(entry: unknown): LiveAircraft | null {
  * clipped the box it was asked for. Several entries can be one aircraft; identity.ts tells which.
  * Null for anything without an `aircraft` array. An entry without a hex or a usable position is
  * dropped, and an optional field of the wrong type or an empty key is left out.
+ * `recentPositions` holds each kept entry's recent_positions as sent, unread, at the same index,
+ * for the one aircraft whose trail is read from it.
  */
-export function parseFrame(data: unknown): { aircraft: LiveAircraft[]; clipped: boolean } | null {
+export function parseFrame(
+  data: unknown,
+): { aircraft: LiveAircraft[]; recentPositions: unknown[]; clipped: boolean } | null {
   if (!isRecord(data) || !Array.isArray(data.aircraft)) return null;
   const aircraft: LiveAircraft[] = [];
+  const recentPositions: unknown[] = [];
   for (const entry of data.aircraft) {
     const parsed = aircraftOf(entry);
-    if (parsed) aircraft.push(parsed);
+    if (!parsed) continue;
+    aircraft.push(parsed);
+    recentPositions.push((entry as Entry).recent_positions);
   }
   const { viewport } = data;
-  return { aircraft, clipped: isRecord(viewport) && viewport.clipped === true };
+  return { aircraft, recentPositions, clipped: isRecord(viewport) && viewport.clipped === true };
 }
 
 // Minimal GeoJSON shapes, enough for what the map sources take.
@@ -161,7 +168,8 @@ export type AircraftCollection = PointCollection<AircraftProps>;
 
 const FEET_PER_METRE = 3.28084;
 
-function altitudeFeet(aircraft: LiveAircraft): number | null {
+/** The aircraft's altitude in feet, from alt_baro or else alt_m; null with neither. */
+export function altitudeFeet(aircraft: LiveAircraft): number | null {
   if (aircraft.alt_baro !== undefined) return aircraft.alt_baro;
   if (aircraft.alt_m !== undefined) return Math.round(aircraft.alt_m * FEET_PER_METRE);
   return null;

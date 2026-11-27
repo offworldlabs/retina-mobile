@@ -4,7 +4,7 @@ import {
   Images,
   Layer,
   Map as MapView,
-  type InitialViewState,
+  type CameraRef,
   type LngLatBounds,
   type MapRef,
   type PressEventWithFeatures,
@@ -25,9 +25,11 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useIsOffline } from '@/api';
 import { ThemedText } from '@/components';
 import { cartoApiKey } from '@/config/env';
+import { useSearchAccess } from '@/features/aircraft/access';
+import { joinTrack, NO_TRACK, trackLine, type TrackLine } from '@/features/aircraft/track';
 import { useTheme, type Palette } from '@/theme';
 
-import { AircraftSheet } from './AircraftSheet';
+import { AircraftSheet, type HistoryControls } from './AircraftSheet';
 import {
   BASEMAPS,
   BASEMAP_LABELS,
@@ -38,16 +40,21 @@ import {
   saveBasemapChoice,
   type BasemapId,
 } from './basemap';
-import { feedBoxOf, type FeedBox } from './feed';
+import { feedBoxOf, type FeedBox, type LiveAircraft } from './feed';
+import {
+  finishMapFocus,
+  INITIAL_VIEW,
+  setLastMapBox,
+  useMapFocus,
+  type PendingMapFocus,
+} from './link';
 import type { LiveFeedState } from './liveFeed';
 import { NodeSheet } from './NodeSheet';
 import { nodesAtSite, useMapNodes } from './nodes';
 import { nearestFeature } from './pick';
-import { useLiveAircraft } from './useLiveAircraft';
+import { useAppActive, useLiveAircraft } from './useLiveAircraft';
 import { useSmoothedAircraft } from './useSmoothedAircraft';
-
-// The web map's default view.
-const INITIAL_VIEW: InitialViewState = { center: [-82.39, 34.85], zoom: 8 };
+import { DEFAULT_HISTORY_WINDOW_S, historyWindows, useTrackHistory } from './useTrackHistory';
 
 const AIRCRAFT_ICON = 'aircraft';
 // The icon is a distance field (white, with the distance to the outline in its alpha), so the
@@ -62,6 +69,14 @@ const MAP_IMAGES = {
 const AIRCRAFT_LAYER = 'aircraft-icons';
 const SELECTED_LAYER = 'aircraft-selected';
 const NODES_LAYER = 'node-dots';
+const TRACK_LAYER = 'aircraft-track-line';
+
+// A request to open an aircraft flies in to at least this zoom, close enough to tell it from its
+// neighbours, in about a second.
+const FOCUS_ZOOM = 9.5;
+const FOCUS_FLIGHT_MS = 1000;
+// How long the card waits for the feed to show an aircraft it was asked to open.
+const FINDING_TIMEOUT_MS = 10_000;
 
 const CONTROL_SIZE = 44;
 
@@ -79,6 +94,29 @@ type SourcePressEvent = NativeSyntheticEvent<PressEventWithFeatures>;
 
 /** What a tap has opened: one aircraft's card or one node's, never both. */
 type Selection = { kind: 'aircraft'; id: string } | { kind: 'node'; ref: string } | null;
+
+/** An aircraft another screen asked the map to open, until the feed shows it. */
+type Finding = { hex: string; callsign: string | null };
+
+/** Every key the selected aircraft is known by, for its history: its id, the keys of the entry
+ *  shown for it, and the hex it was asked for while it is being found. */
+function historyHexes(
+  id: string | null,
+  aircraft: LiveAircraft | undefined,
+  finding: Finding | null,
+): string[] {
+  if (id === null) return [];
+  const keys = [id, aircraft?.hex, aircraft?.adsb_hex, aircraft?.predecessor_hex, finding?.hex];
+  return [...new Set(keys.filter((key): key is string => !!key))];
+}
+
+/** A #rrggbb colour at `alpha` opacity; any other colour as it is. */
+function withAlpha(color: string, alpha: number): string {
+  const match = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(color);
+  if (!match) return color;
+  const [r, g, b] = match.slice(1).map((part) => parseInt(part, 16));
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
 
 /**
  * The `key` property of the pressed feature nearest the finger, or null when none carries one.
@@ -318,18 +356,58 @@ const AircraftSource = memo(function AircraftSource({
 });
 
 /**
+ * The selected aircraft's track as one line under the nodes and the aircraft, fading from its
+ * oldest point to its newest as the web map's does. A component of its own, so the track
+ * changing re-renders this source alone.
+ */
+const TrackSource = memo(function TrackSource({ track }: { track: TrackLine }) {
+  const { colors } = useTheme();
+  return (
+    <GeoJSONSource id="aircraft-track" data={track} lineMetrics>
+      <Layer
+        id={TRACK_LAYER}
+        type="line"
+        beforeId={NODES_LAYER}
+        layout={{ 'line-join': 'round', 'line-cap': 'round' }}
+        paint={{
+          'line-width': 3,
+          'line-gradient': [
+            'interpolate',
+            ['linear'],
+            ['line-progress'],
+            0,
+            withAlpha(colors.warning, 0.1),
+            1,
+            withAlpha(colors.warning, 1),
+          ],
+        }}
+      />
+    </GeoJSONSource>
+  );
+});
+
+/**
  * The live map: every aircraft in view from the live feed, drawn by one GeoJSON source and moved
  * smoothly between frames, over the public nodes and the basemap the theme or the user picked.
  * A tap opens the card of the aircraft nearest the finger or, with no aircraft under it, of the
  * node nearest it; an aircraft and a node under one finger open the aircraft. The card stays on
- * its aircraft through the server's renames. Tapping the map elsewhere closes the card.
+ * its aircraft through the server's renames. Tapping the map elsewhere closes the card. Another
+ * screen can ask it to open an aircraft (link.ts): the camera flies there and its card opens. The
+ * selected aircraft's track is drawn under it: its trail from the feed and, for an account with
+ * the data API, its history.
  */
 export function LiveMap() {
   const { scheme, colors, spacing } = useTheme();
   const insets = useSafeAreaInsets();
   const focused = useIsFocused();
+  const foreground = useAppActive();
   const offline = useIsOffline();
+  const access = useSearchAccess();
   const mapRef = useRef<MapRef>(null);
+  const cameraRef = useRef<CameraRef>(null);
+  // The zoom the map settled at last, for a focus request to fly in from.
+  const zoomRef = useRef(INITIAL_VIEW.zoom ?? 0);
+  const [mapLoaded, setMapLoaded] = useState(false);
 
   // The basemap follows the theme until one is picked by hand, and a pick is kept on the device
   // across restarts. Cycling back onto the theme's own default hands it back to the theme and
@@ -371,8 +449,8 @@ export function LiveMap() {
     });
   };
 
-  const feed = useLiveAircraft(box, focused);
-  const nodes = useMapNodes(focused);
+  // Other screens read the box the feed was last given (link.ts).
+  useEffect(() => setLastMapBox(box), [box]);
 
   // The map hands a tap to one source only, the one with a feature under the finger whose layer is
   // drawn on top, and the aircraft layers sit over the nodes', so an aircraft and a node under one
@@ -380,26 +458,114 @@ export function LiveMap() {
   // the card it just opened. The aircraft press keeps one identity so the memoized source above
   // does not re-render for it.
   const [selection, setSelection] = useState<Selection>(null);
+  const tappedId = selection?.kind === 'aircraft' ? selection.id : null;
+  const feed = useLiveAircraft(box, focused, tappedId);
+  const nodes = useMapNodes(focused);
+
   // An aircraft is selected by the id it had when tapped, read through the feed's identity on every
   // render, so the ring and the card follow it when the server's ids for it turn out to be one
   // aircraft. The id it resolves to is kept from then on, so the selection outlives the old id.
-  const tappedId = selection?.kind === 'aircraft' ? selection.id : null;
   const selectedId = tappedId === null ? null : (feed.idFor?.(tappedId) ?? tappedId);
   if (selectedId !== null && selectedId !== tappedId) {
     setSelection({ kind: 'aircraft', id: selectedId });
   }
+  const selectedAircraft = selectedId === null ? undefined : feed.aircraft.get(selectedId);
   const selectedRef = selection?.kind === 'node' ? selection.ref : null;
+
+  // A focus request opens the card on the hex it names and waits for the feed to show it, which
+  // ends as soon as the feed does, the card closes or another pick is made, or at the timeout,
+  // after which the card says the aircraft is not in view.
+  const [finding, setFinding] = useState<Finding | null>(null);
+  if (finding !== null && (selectedId === null || selectedAircraft !== undefined)) {
+    setFinding(null);
+  }
   const selectAircraft = useCallback((event: SourcePressEvent) => {
     event.stopPropagation();
     const id = nearestPressed(event, 'id');
-    if (id !== null) setSelection({ kind: 'aircraft', id });
+    if (id === null) return;
+    setSelection({ kind: 'aircraft', id });
+    setFinding(null);
   }, []);
   const selectNode = (event: SourcePressEvent) => {
     event.stopPropagation();
     const ref = nearestPressed(event, 'ref');
-    if (ref !== null) setSelection({ kind: 'node', ref });
+    if (ref === null) return;
+    setSelection({ kind: 'node', ref });
+    setFinding(null);
   };
-  const closeCard = () => setSelection(null);
+  const closeCard = () => {
+    setSelection(null);
+    setFinding(null);
+  };
+
+  // Applied once each, by number, and only on screen: with the map focused, loaded and in the
+  // foreground. One made meanwhile waits, and a newer one replaces it.
+  const focusRequest = useMapFocus();
+  const [focusApplied, setFocusApplied] = useState<PendingMapFocus | null>(null);
+  if (
+    focusRequest !== null &&
+    focusRequest.seq !== focusApplied?.seq &&
+    focused &&
+    foreground &&
+    mapLoaded
+  ) {
+    setFocusApplied(focusRequest);
+    setSelection({ kind: 'aircraft', id: focusRequest.hex });
+    setFinding({ hex: focusRequest.hex, callsign: focusRequest.callsign });
+  }
+  useEffect(() => {
+    if (focusApplied === null) return;
+    finishMapFocus(focusApplied.seq);
+    cameraRef.current?.flyTo({
+      center: [focusApplied.lon, focusApplied.lat],
+      zoom: Math.max(zoomRef.current, FOCUS_ZOOM),
+      duration: FOCUS_FLIGHT_MS,
+      easing: 'fly',
+    });
+  }, [focusApplied]);
+
+  // The wait runs only on screen, afresh each time the map comes back.
+  useEffect(() => {
+    if (finding === null || !focused || !foreground) return;
+    const timer = setTimeout(() => setFinding(null), FINDING_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [finding, focused, foreground]);
+
+  // History for an account with the data API, over a span it may ask for.
+  const maxSpanS = access.kind === 'entitled' ? access.maxHistorySpanS : undefined;
+  const windows = useMemo(
+    () => (maxSpanS === undefined ? [] : historyWindows(maxSpanS)),
+    [maxSpanS],
+  );
+  const [pickedWindow, setPickedWindow] = useState(DEFAULT_HISTORY_WINDOW_S);
+  const windowS: number | undefined = windows.includes(pickedWindow)
+    ? pickedWindow
+    : windows[windows.length - 1];
+  const history = useTrackHistory({
+    id: selectedId,
+    hexes: historyHexes(selectedId, selectedAircraft, finding),
+    windowS: windowS ?? DEFAULT_HISTORY_WINDOW_S,
+    entitled: windowS !== undefined,
+    active: focused && foreground,
+  });
+  const historyControls: HistoryControls | null =
+    windowS === undefined
+      ? null
+      : {
+          windows,
+          windowS,
+          onWindow: setPickedWindow,
+          status: history.status,
+          truncated: history.truncated,
+        };
+
+  const hasAircraft = selectedId !== null;
+  const historyPoints = history.points;
+  const trail = feed.trail;
+  const track = useMemo(
+    () => (hasAircraft ? trackLine(joinTrack(historyPoints ?? [], trail)) : NO_TRACK),
+    [hasAircraft, historyPoints, trail],
+  );
   const site = useMemo(
     () => (selectedRef === null ? [] : nodesAtSite(nodes.nodes, selectedRef)),
     [nodes.nodes, selectedRef],
@@ -428,16 +594,21 @@ export function LiveMap() {
           top: Math.round(insets.top + spacing.lg + CONTROL_SIZE + spacing.lg),
           right: Math.round(insets.right + spacing.lg),
         }}
-        onDidFinishLoadingMap={readBounds}
+        onDidFinishLoadingMap={() => {
+          setMapLoaded(true);
+          readBounds();
+        }}
         onRegionDidChange={(event) => {
           // Android leaves the bounds out of the event when it cannot build the visible region.
-          const { bounds } = event.nativeEvent;
+          const { bounds, zoom } = event.nativeEvent;
           if (Array.isArray(bounds) && bounds.length === 4) showBounds(bounds);
+          if (Number.isFinite(zoom)) zoomRef.current = zoom;
         }}
         onPress={closeCard}
       >
-        <Camera initialViewState={INITIAL_VIEW} />
+        <Camera ref={cameraRef} initialViewState={INITIAL_VIEW} />
         <Images images={MAP_IMAGES} />
+        <TrackSource track={track} />
         <GeoJSONSource id="nodes" data={nodes.collection} onPress={selectNode}>
           <Layer
             id={NODES_LAYER}
@@ -492,9 +663,11 @@ export function LiveMap() {
           </View>
           <AircraftSheet
             id={selectedId}
-            aircraft={selectedId === null ? undefined : feed.aircraft.get(selectedId)}
+            aircraft={selectedAircraft}
             nodesByRef={nodes.byRef}
             onClose={closeCard}
+            finding={finding}
+            history={historyControls}
             footer={cardFooter}
           />
           <NodeSheet nodeRef={selectedRef} site={site} onClose={closeCard} footer={cardFooter} />
