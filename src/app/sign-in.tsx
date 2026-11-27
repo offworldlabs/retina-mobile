@@ -5,7 +5,7 @@ import { View } from 'react-native';
 import { requestMagicLink, userMessage } from '@/api';
 import { useAuth } from '@/auth';
 import { Button, ThemedText } from '@/components';
-import { AuthScreen, EmailField, isValidEmail } from '@/features/auth';
+import { AuthScreen, EmailField, isValidEmail, sameEmail } from '@/features/auth';
 import { Notice } from '@/features/network';
 import { useTheme } from '@/theme';
 
@@ -15,13 +15,30 @@ export default function SignInScreen() {
   const router = useRouter();
   const { spacing } = useTheme();
   const { state } = useAuth();
-  const { reason } = useLocalSearchParams<{ reason?: string }>();
-  const [email, setEmail] = useState('');
+  const { reason, email: emailParam } = useLocalSearchParams<{
+    reason?: string;
+    email?: string | string[];
+  }>();
+  // An address handed over by another screen, such as a node claimed for another account.
+  const suggested = ((Array.isArray(emailParam) ? emailParam[0] : emailParam) ?? '').trim();
+  const [email, setEmail] = useState(suggested);
   const [attempted, setAttempted] = useState(false);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sentTo, setSentTo] = useState<string | null>(null);
   const [resendNote, setResendNote] = useState<ResendNote | null>(null);
+  const [prefilled, setPrefilled] = useState(suggested);
+  // A new address handed over while this screen is open starts the form over with it.
+  if (suggested !== prefilled) {
+    setPrefilled(suggested);
+    if (suggested) {
+      setEmail(suggested);
+      setAttempted(false);
+      setSendError(null);
+      setSentTo(null);
+      setResendNote(null);
+    }
+  }
   // Set before the first await, so a second tap in the same frame finds the request out.
   const inFlight = useRef(false);
 
@@ -63,7 +80,12 @@ export default function SignInScreen() {
     }
   };
 
-  if (state.status === 'signed-in') {
+  // Signed in, the form stays for another account's address only: the link it mails asks
+  // before it switches.
+  const otherAccount =
+    state.status === 'signed-in' && suggested !== '' && !sameEmail(state.email, suggested);
+
+  if (state.status === 'signed-in' && !otherAccount) {
     return (
       <AuthScreen title="Sign in">
         <ThemedText>{`You're signed in as ${state.email}.`}</ThemedText>
@@ -114,6 +136,11 @@ export default function SignInScreen() {
     <AuthScreen title="Sign in">
       {reason === 'session-ended' ? (
         <Notice tone="warning" text="Your session ended. Sign in again." />
+      ) : null}
+      {state.status === 'signed-in' ? (
+        <Notice
+          text={`You're signed in as ${state.email}. The link will ask before it switches accounts.`}
+        />
       ) : null}
       <EmailField
         value={email}

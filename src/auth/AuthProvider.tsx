@@ -58,6 +58,10 @@ function stateOf(session: StoredSession | null): AuthState {
 // and only a restart could tell the difference.
 const ignore = () => undefined;
 
+// Screens that say themselves what a signed-out viewer can do: a session-ended modal over them
+// would hide that, and signing in from it would close them too.
+const NO_SESSION_ENDED_MODAL = ['/auth/link/', '/auth/claim/'];
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ status: 'loading' });
   const router = useRouter();
@@ -83,8 +87,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       void clearSession().catch(ignore);
       sync();
       queryClient.clear();
-      // The link screen asks to sign in itself once signed out; a modal over it would hide that.
-      if (pathnameRef.current.startsWith('/auth/link/')) return;
+      const path = pathnameRef.current;
+      if (NO_SESSION_ENDED_MODAL.some((prefix) => path.startsWith(prefix))) return;
       try {
         // useRouter's push only queues the navigation, which runs once the root navigator is
         // mounted, so a 401 to the restore's own check at start is safe too.

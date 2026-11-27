@@ -25,6 +25,8 @@ export default function RootLayout() {
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="sign-in" options={{ presentation: 'modal' }} />
             <Stack.Screen name="auth/link/[token]" options={{ presentation: 'modal' }} />
+            <Stack.Screen name="auth/claim/[token]" options={{ presentation: 'modal' }} />
+            <Stack.Screen name="nodes/[id]" />
           </Stack>
         </ThemeProvider>
       </AuthProvider>
