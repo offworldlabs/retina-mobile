@@ -1,50 +1,66 @@
-import { View } from 'react-native';
+import { useRouter } from 'expo-router';
+import { Pressable, View } from 'react-native';
 
-import type { OwnerNode } from '@/api';
+import type { OwnerAnalytics, OwnerNode } from '@/api';
 import { ThemedText } from '@/components';
+import {
+  formatDb,
+  formatMhz,
+  formatPercent,
+  heardAgo,
+  nodeName,
+  nodeStatus,
+  summaryFor,
+  type StatusTone,
+} from './model';
+import { useNow } from './clock';
+import { detectionCount, trackCount } from './OverviewStats';
 import { useTheme } from '@/theme';
 
-const MINUTE_MS = 60_000;
-const HOUR_MS = 60 * MINUTE_MS;
-const DAY_MS = 24 * HOUR_MS;
+/** How often "last heard" is read again, as on the node page. */
+const CLOCK_MS = 15_000;
 
-/** "just now", "N min ago", "N h ago" or "N d ago"; null for a time that is empty or not a date. */
-function heardAgo(iso: string | null): string | null {
-  if (!iso) return null;
-  const at = Date.parse(iso);
-  if (Number.isNaN(at)) return null;
-  const age = Date.now() - at;
-  if (age < MINUTE_MS) return 'just now';
-  if (age < HOUR_MS) return `${Math.floor(age / MINUTE_MS)} min ago`;
-  if (age < DAY_MS) return `${Math.floor(age / HOUR_MS)} h ago`;
-  return `${Math.floor(age / DAY_MS)} d ago`;
+function Fact({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  const { spacing } = useTheme();
+  return (
+    <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: spacing.lg }}>
+      <ThemedText variant="caption" color="secondary">
+        {label}
+      </ThemedText>
+      <ThemedText variant={mono ? 'mono' : 'caption'} selectable style={{ flexShrink: 1 }}>
+        {value}
+      </ThemedText>
+    </View>
+  );
 }
 
-export function MyNodeRow({ node }: { node: OwnerNode }) {
+export function MyNodeRow({
+  node,
+  analytics,
+}: {
+  node: OwnerNode;
+  analytics: OwnerAnalytics | null;
+}) {
+  const router = useRouter();
   const { colors, spacing, radius } = useTheme();
-  const name = node.name || node.label || node.node_ref || node.node_id;
-  const heard = heardAgo(node.last_heartbeat);
-  const status =
-    node.status === 'active'
-      ? { text: 'Online', color: colors.success }
-      : node.status === 'disconnected'
-        ? { text: 'Offline', color: colors.warning }
-        : node.status === 'never_connected'
-          ? { text: 'Never connected', color: colors.textMuted }
-          : { text: node.status, color: colors.textMuted };
-  const label = [
-    name,
-    status.text,
-    heard && `last heard ${heard}`,
-    node.location_private && 'private location',
-  ]
-    .filter(Boolean)
-    .join(', ');
+  const now = useNow(CLOCK_MS);
+  const name = nodeName(node);
+  const status = nodeStatus(node.status);
+  const toneColor: Record<StatusTone, string> = {
+    online: colors.success,
+    offline: colors.error,
+    never: colors.textMuted,
+  };
+  const heard = heardAgo(node.last_heartbeat, now);
+  const summary = summaryFor(analytics, node.node_ref);
+  const label = [name, status.label, heard && `last heard ${heard}`].filter(Boolean).join(', ');
+  const hasLocation = node.rx_lat !== null && node.rx_lon !== null;
   return (
-    <View
-      accessible
+    <Pressable
+      accessibilityRole="button"
       accessibilityLabel={label}
-      style={{
+      onPress={() => router.push({ pathname: '/nodes/[id]', params: { id: node.node_id } })}
+      style={({ pressed }) => ({
         minHeight: 44,
         gap: spacing.md,
         paddingHorizontal: spacing.xl,
@@ -52,12 +68,9 @@ export function MyNodeRow({ node }: { node: OwnerNode }) {
         borderRadius: radius.md,
         borderWidth: 1,
         borderColor: colors.border,
-        backgroundColor: colors.bgCard,
-      }}
+        backgroundColor: pressed ? colors.bgCardHover : colors.bgCard,
+      })}
     >
-      <ThemedText variant="heading" numberOfLines={1}>
-        {name}
-      </ThemedText>
       <View
         style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.md }}
       >
@@ -78,24 +91,51 @@ export function MyNodeRow({ node }: { node: OwnerNode }) {
               width: spacing.md,
               height: spacing.md,
               borderRadius: radius.sm,
-              backgroundColor: status.color,
+              backgroundColor: toneColor[status.tone],
             }}
           />
           <ThemedText variant="caption" color="secondary">
-            {status.text}
+            {status.label}
           </ThemedText>
         </View>
         {node.location_private && (
-          <ThemedText variant="caption" color="muted">
-            Private
-          </ThemedText>
+          <View
+            style={{
+              paddingHorizontal: spacing.md,
+              borderRadius: radius.md,
+              borderWidth: 1,
+              borderColor: colors.border,
+            }}
+          >
+            <ThemedText variant="caption" color="muted">
+              Private
+            </ThemedText>
+          </View>
         )}
+      </View>
+      <ThemedText variant="heading" numberOfLines={1}>
+        {name}
+      </ThemedText>
+      <View style={{ gap: spacing.xs }}>
+        {node.node_ref && node.name && node.name !== node.node_ref && (
+          <Fact label="Ref" value={node.node_ref} mono />
+        )}
+        <Fact label="Frequency" value={formatMhz(node.frequency)} />
+        <Fact
+          label="Location"
+          value={hasLocation ? `${node.rx_lat?.toFixed(3)}, ${node.rx_lon?.toFixed(3)}` : '—'}
+        />
+        <Fact label="Detections" value={detectionCount(summary).toLocaleString()} />
+        <Fact label="Tracks" value={trackCount(summary).toLocaleString()} />
+        <Fact label="Availability" value={formatPercent(summary?.metrics?.availability_7d)} />
+        <Fact label="Avg SNR" value={formatDb(summary?.metrics?.avg_snr)} />
+        <Fact label="Config" value={node.config_hash ? node.config_hash.slice(0, 8) : '—'} mono />
       </View>
       {heard && (
         <ThemedText variant="caption" color="secondary">
           Last heard {heard}
         </ThemedText>
       )}
-    </View>
+    </Pressable>
   );
 }

@@ -1,19 +1,39 @@
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import type { ReactElement } from 'react';
+import { useState, type ReactElement } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 
-import { userMessage } from '@/api';
+import { myNodesQuery, OWNER_QUERY_ROOT, userMessage } from '@/api';
 import { useAuth } from '@/auth';
 import { Button, ListScreen, Placeholder, Screen } from '@/components';
 import { NodeSeparator, Notice } from '@/features/network';
-import { MyNodeRow, useMyNodes } from '@/features/nodes';
+import { MyNodeRow, OpenClaims, OverviewStats, useMyNodes } from '@/features/nodes';
+import { DetectionsByNodeChart } from '@/features/nodes/charts';
+import { useMyAnalytics, useMyClaims } from '@/features/nodes/hooks';
 import { useTheme } from '@/theme';
 
 export default function NodesScreen() {
   const router = useRouter();
   const { state } = useAuth();
   const { colors, spacing } = useTheme();
-  const nodes = useMyNodes(state.status === 'signed-in' ? state.email : null);
+  const email = state.status === 'signed-in' ? state.email : null;
+  const nodes = useMyNodes(email);
+  const claims = useMyClaims(email);
+  const analytics = useMyAnalytics(email);
+  const queryClient = useQueryClient();
+  const loadedAt = useQuery({ ...myNodesQuery(email ?? ''), enabled: false }).dataUpdatedAt;
+  const [refreshing, setRefreshing] = useState(false);
+
+  /** Reads the nodes, claims and analytics anew; does nothing while offline. */
+  const refresh = async () => {
+    if (nodes.offline || email === null) return;
+    setRefreshing(true);
+    try {
+      await queryClient.invalidateQueries({ queryKey: OWNER_QUERY_ROOT });
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   if (state.status === 'loading') {
     return (
@@ -42,9 +62,9 @@ export default function NodesScreen() {
     );
   }
 
-  let header: ReactElement | undefined;
+  let notice: ReactElement | undefined;
   if (nodes.offline) {
-    header = (
+    notice = (
       <Notice
         tone="warning"
         text={
@@ -54,9 +74,32 @@ export default function NodesScreen() {
         }
       />
     );
+  } else if (nodes.error && nodes.hasData) {
+    notice = (
+      <Notice
+        tone="warning"
+        text={`Could not refresh your nodes: ${userMessage(nodes.error)}. Showing what was loaded at ${new Date(loadedAt).toLocaleTimeString()}.`}
+      />
+    );
   } else if (nodes.error) {
-    header = <Notice tone="warning" text={userMessage(nodes.error)} />;
+    notice = (
+      <>
+        <Notice tone="warning" text={`Could not load your nodes: ${userMessage(nodes.error)}`} />
+        <Button label="Retry" onPress={nodes.refresh} />
+      </>
+    );
   }
+
+  const header = (
+    <>
+      {notice}
+      <OpenClaims claims={claims.error ? [] : claims.claims} onSent={() => void claims.refresh()} />
+      {nodes.hasData && <OverviewStats nodes={nodes.nodes} analytics={analytics.analytics} />}
+      {nodes.nodes.length > 1 && (
+        <DetectionsByNodeChart nodes={nodes.nodes} analytics={analytics.analytics} />
+      )}
+    </>
+  );
 
   let empty: ReactElement | undefined;
   if (nodes.isLoading) {
@@ -68,8 +111,8 @@ export default function NodesScreen() {
   } else if (nodes.hasData || (!nodes.error && !nodes.offline)) {
     empty = (
       <Placeholder
-        title="No nodes yet"
-        description="Nodes you claim on the RETINA website show up here."
+        title="No nodes on your account yet."
+        description="To connect a node, enter your email address in its setup and we will send you a link. Click it and the node joins your account."
       />
     );
   }
@@ -79,12 +122,13 @@ export default function NodesScreen() {
       title="My nodes"
       header={header}
       data={nodes.nodes}
+      extraData={analytics.analytics}
       keyExtractor={(node) => node.node_id}
-      renderItem={({ item }) => <MyNodeRow node={item} />}
+      renderItem={({ item }) => <MyNodeRow node={item} analytics={analytics.analytics} />}
       ItemSeparatorComponent={NodeSeparator}
       ListEmptyComponent={empty}
-      refreshing={nodes.refreshing}
-      onRefresh={nodes.refresh}
+      refreshing={refreshing}
+      onRefresh={refresh}
     />
   );
 }

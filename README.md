@@ -123,3 +123,11 @@ adb shell am start -W -a android.intent.action.VIEW -d "retina://auth/link/<toke
 ```
 
 In `development`, the token is in the server's mail log, in the link for the email address that asked to sign in (for example `user@example.com`).
+
+### Node claim links
+
+A node's claim link opens the app too (`retina://auth/claim/<token>` or `https://<app host>/auth/claim/<token>`). The app names the node and asks, as the web's claim page does. Confirming adds the node to the account the link was mailed to and never switches the app's account: when that is another account, the app offers a sign-in link for it. The claim requests send and keep no cookies. On iOS the `https` form also needs `/auth/claim/*` in the server's `apple-app-site-association`, which lists `/auth/link/*` only so far.
+
+```sh
+adb shell am start -W -a android.intent.action.VIEW -d "retina://auth/claim/<token>" retina.fm
+```

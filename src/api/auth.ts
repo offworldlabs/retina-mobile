@@ -21,7 +21,52 @@ export interface AccountUser {
  */
 export type OwnerNodeStatus = 'active' | 'disconnected' | 'never_connected' | (string & {});
 
-/** One of the signed-in account's nodes, with what a list of them shows. */
+/**
+ * Which ends of a node's bistatic pair have coordinates. Apart from its status: a node can be
+ * detecting and still be anything but 'positioned'.
+ */
+export type PositionStatus = 'positioned' | 'missing_rx' | 'missing_tx' | 'missing_both';
+
+const POSITION_STATUSES: readonly string[] = [
+  'positioned',
+  'missing_rx',
+  'missing_tx',
+  'missing_both',
+];
+
+/** A stock blah2 radar the server polls, as its owner sees it under `polled`. */
+export interface OwnedPolledRadar {
+  /** As the owner gave it, less any password. */
+  address: string;
+  unprotected: boolean;
+  /** How the server's polls are going, as the poller last wrote it. */
+  liveness: 'pending' | 'streaming' | 'stalled' | 'unreachable' | (string & {});
+  /** Whether its data reaches the solve and the public map ('graduated') or only its own pages. */
+  trust_state: 'probation' | 'graduated' | (string & {});
+}
+
+/** A node's geometry as configured, the true positions; null where the node declared none. */
+export interface OwnerNodeLocation {
+  rx_lat: number | null;
+  rx_lon: number | null;
+  rx_alt_ft: number | null;
+  tx_lat: number | null;
+  tx_lon: number | null;
+  tx_alt_ft: number | null;
+}
+
+/** A node's RF configuration beyond carrier and sample rate; null where unknown. */
+export interface OwnerNodeRf {
+  tx_callsign: string | null;
+  beam_width_deg: number | null;
+  beam_azimuth_deg: number | null;
+  max_range_km: number | null;
+  cpi_s: number | null;
+  delay_tolerance_us: number | null;
+  doppler_tolerance_hz: number | null;
+}
+
+/** One of the signed-in account's nodes: an item of the list, and the answer for one node. */
 export interface OwnerNode {
   node_id: string;
   /** The node's public handle; null for a node published nowhere. */
@@ -37,6 +82,19 @@ export interface OwnerNode {
   rx_lon: number | null;
   /** Withheld from every public surface. */
   location_private: boolean;
+  config_hash: string | null;
+  is_synthetic: boolean;
+  position_status: PositionStatus;
+  /** Carrier, Hz. */
+  frequency: number | null;
+  /** Hz. */
+  sample_rate: number | null;
+  location: OwnerNodeLocation;
+  rf: OwnerNodeRf;
+  /** The address the node was claimed with; null for a node assigned to the account, polled radars included. */
+  claimed_with: string | null;
+  /** Null for every node but a polled radar. */
+  polled: OwnedPolledRadar | null;
 }
 
 function accountUserOf(data: unknown): AccountUser | null {
@@ -52,6 +110,101 @@ function isOwnerNode(data: unknown): data is OwnerNode {
     typeof node.status === 'string' &&
     typeof node.location_private === 'boolean'
   );
+}
+
+/** A JSON object, not null and not a list. */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** A finite number, else null: what an untyped body's "number or null" field is read as. */
+export function numberOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/** A string, else null. */
+export function stringOrNull(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function numbersOf<K extends string>(
+  data: Record<string, unknown>,
+  keys: readonly K[],
+): Record<K, number | null> {
+  return Object.fromEntries(keys.map((key) => [key, numberOrNull(data[key])])) as Record<
+    K,
+    number | null
+  >;
+}
+
+const LOCATION_FIELDS = ['rx_lat', 'rx_lon', 'rx_alt_ft', 'tx_lat', 'tx_lon', 'tx_alt_ft'] as const;
+const RF_NUMBERS = [
+  'beam_width_deg',
+  'beam_azimuth_deg',
+  'max_range_km',
+  'cpi_s',
+  'delay_tolerance_us',
+  'doppler_tolerance_hz',
+] as const;
+
+function polledOf(data: unknown): OwnedPolledRadar | null {
+  if (!isRecord(data)) return null;
+  return {
+    address: stringOrNull(data.address) ?? '',
+    unprotected: data.unprotected === true,
+    liveness: stringOrNull(data.liveness) ?? '',
+    trust_state: stringOrNull(data.trust_state) ?? '',
+  };
+}
+
+/**
+ * A node view (services/owner_nodes.py) as the app reads it, or null when it lacks what every
+ * server sends: node_id, status and location_private. A field an older server leaves out reads
+ * as unknown (null, false, empty), and an unknown position status as 'positioned', so no
+ * warning is raised that the server did not raise.
+ */
+export function ownerNodeOf(data: unknown): OwnerNode | null {
+  if (!isOwnerNode(data)) return null;
+  // Past the three fields checked, every one is read as whatever the server sent.
+  const view = data as unknown as Record<string, unknown>;
+  const location = isRecord(view.location) ? view.location : {};
+  const rf = isRecord(view.rf) ? view.rf : {};
+  const position = view.position_status;
+  return {
+    node_id: data.node_id,
+    node_ref: stringOrNull(view.node_ref),
+    name: stringOrNull(view.name),
+    label: stringOrNull(view.label),
+    status: data.status,
+    last_heartbeat: stringOrNull(view.last_heartbeat),
+    rx_lat: numberOrNull(view.rx_lat),
+    rx_lon: numberOrNull(view.rx_lon),
+    location_private: data.location_private,
+    config_hash: stringOrNull(view.config_hash),
+    is_synthetic: view.is_synthetic === true,
+    position_status:
+      typeof position === 'string' && POSITION_STATUSES.includes(position)
+        ? (position as PositionStatus)
+        : 'positioned',
+    frequency: numberOrNull(view.frequency),
+    sample_rate: numberOrNull(view.sample_rate),
+    location: numbersOf(location, LOCATION_FIELDS),
+    rf: { tx_callsign: stringOrNull(rf.tx_callsign), ...numbersOf(rf, RF_NUMBERS) },
+    claimed_with: stringOrNull(view.claimed_with),
+    polled: polledOf(view.polled),
+  };
+}
+
+/**
+ * `read`, for the account signed in as `email`: its answer is kept only when the session was
+ * that account's from before the request to after it, so one account's data never shows under
+ * another's. Otherwise an UnauthorizedError, which no query retries.
+ */
+export async function readForAccount<T>(email: string, read: () => Promise<T>): Promise<T> {
+  if (currentSession()?.email !== email) throw new UnauthorizedError();
+  const value = await read();
+  if (currentSession()?.email !== email) throw new UnauthorizedError();
+  return value;
 }
 
 /** Mails a sign-in link that opens the app. A 429 when asked too often. */
@@ -119,10 +272,11 @@ export async function fetchMyNodes(
   client: ApiClient = api,
 ): Promise<OwnerNode[]> {
   const data: unknown = await client.get('/api/auth/me/nodes', { signal });
-  if (!Array.isArray(data) || !data.every(isOwnerNode)) {
+  const nodes = Array.isArray(data) ? data.map(ownerNodeOf) : null;
+  if (!nodes || nodes.includes(null)) {
     throw new InvalidResponseError('GET /api/auth/me/nodes: expected a list of nodes');
   }
-  return data;
+  return nodes as OwnerNode[];
 }
 
 /**
@@ -133,10 +287,5 @@ export async function fetchMyNodes(
 export const myNodesQuery = (email: string) =>
   queryOptions({
     queryKey: ['auth', 'me', 'nodes', email],
-    queryFn: async ({ signal }) => {
-      if (currentSession()?.email !== email) throw new UnauthorizedError();
-      const nodes = await fetchMyNodes(signal);
-      if (currentSession()?.email !== email) throw new UnauthorizedError();
-      return nodes;
-    },
+    queryFn: ({ signal }) => readForAccount(email, () => fetchMyNodes(signal)),
   });
