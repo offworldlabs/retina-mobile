@@ -46,3 +46,18 @@ export { fetchMapNodes, type MapNodesBody } from './mapNodes';
 export { isOffline, useIsOffline } from './network';
 export { QueryProvider, queryClient } from './query';
 export type { components, operations, paths } from './schema.gen';
+export {
+  dataAccessQuery,
+  fetchAircraftHistory,
+  fetchDataAccess,
+  fetchNetworkAircraft,
+  fetchViewAircraft,
+  type AircraftBox,
+  type AircraftHistoryQuery,
+  type AircraftHistoryRow,
+  type DataAccess,
+  type DataAccessContributor,
+  type DataAccessLimits,
+  type NetworkAircraftQuery,
+  type SearchAircraft,
+} from './aircraft';

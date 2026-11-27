@@ -1,11 +1,22 @@
 import type { ReactNode } from 'react';
-import { Pressable, View } from 'react-native';
+import { ActivityIndicator, Pressable, View } from 'react-native';
 
 import { ThemedText } from '@/components';
 import { useTheme } from '@/theme';
 
 import type { LiveAircraft } from './feed';
 import type { MapNode } from './nodes';
+import type { TrackHistoryStatus } from './useTrackHistory';
+
+/** The history spans the card offers and the state of the one picked. */
+export type HistoryControls = {
+  /** The spans to pick from, in seconds. */
+  windows: readonly number[];
+  windowS: number;
+  onWindow: (windowS: number) => void;
+  status: TrackHistoryStatus;
+  truncated: boolean;
+};
 
 export type AircraftSheetProps = {
   /** The selected aircraft's id (identity.ts), which the server's renames keep; null renders
@@ -15,6 +26,10 @@ export type AircraftSheetProps = {
   aircraft: LiveAircraft | undefined;
   nodesByRef: ReadonlyMap<string, MapNode>;
   onClose: () => void;
+  /** The aircraft the map was asked to open, while the feed has not shown it yet. */
+  finding?: { hex: string; callsign: string | null } | null;
+  /** The track history row; null or absent for an account without history. */
+  history?: HistoryControls | null;
   /** Shown at the bottom of the card, under a hairline. */
   footer?: ReactNode;
 };
@@ -79,6 +94,81 @@ function seenByRefs(aircraft: LiveAircraft): string[] {
   return aircraft.node_ref ? [aircraft.node_ref] : [];
 }
 
+function windowText(seconds: number): string {
+  return seconds < 3600 ? `${seconds / 60} min` : `${seconds / 3600} h`;
+}
+
+function windowSpoken(seconds: number): string {
+  const [count, unit] = seconds < 3600 ? [seconds / 60, 'minute'] : [seconds / 3600, 'hour'];
+  return `${count} ${unit}${count === 1 ? '' : 's'}`;
+}
+
+function historyNote({ status, truncated }: HistoryControls): string | null {
+  if (status === 'loading') return 'Loading history…';
+  if (status === 'unavailable') return 'History unavailable';
+  if (status === 'ready' && truncated) return 'Showing the first 10,000 positions';
+  return null;
+}
+
+function HistoryRow({ history }: { history: HistoryControls }) {
+  const { colors, spacing, radius } = useTheme();
+  const note = historyNote(history);
+  return (
+    <View style={{ gap: spacing.xs }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.lg }}>
+        <ThemedText variant="body" color="secondary">
+          History
+        </ThemedText>
+        <View
+          accessibilityRole="radiogroup"
+          accessibilityLabel="History"
+          style={{ flex: 1, flexDirection: 'row', justifyContent: 'flex-end', gap: spacing.sm }}
+        >
+          {history.windows.map((seconds) => {
+            const picked = seconds === history.windowS;
+            return (
+              <Pressable
+                key={seconds}
+                accessibilityRole="radio"
+                accessibilityLabel={windowSpoken(seconds)}
+                accessibilityState={{ checked: picked }}
+                hitSlop={spacing.sm}
+                onPress={() => history.onWindow(seconds)}
+                style={({ pressed }) => ({
+                  paddingHorizontal: spacing.md,
+                  paddingVertical: spacing.xs,
+                  borderRadius: radius.md,
+                  borderWidth: 1,
+                  borderColor: picked ? colors.accent : colors.border,
+                  backgroundColor: picked
+                    ? colors.accentWash
+                    : pressed
+                      ? colors.bgCardHover
+                      : 'transparent',
+                })}
+              >
+                <ThemedText variant="label" color={picked ? 'accent' : 'secondary'}>
+                  {windowText(seconds)}
+                </ThemedText>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+      {note !== null && (
+        <ThemedText
+          variant="caption"
+          color="secondary"
+          accessibilityLiveRegion="polite"
+          style={{ textAlign: 'right' }}
+        >
+          {note}
+        </ThemedText>
+      )}
+    </View>
+  );
+}
+
 function DetailRow({ label, children }: { label: string; children: React.ReactNode }) {
   const { spacing } = useTheme();
   return (
@@ -119,10 +209,21 @@ function SeenBy({
   );
 }
 
-export function AircraftSheet({ id, aircraft, nodesByRef, onClose, footer }: AircraftSheetProps) {
+export function AircraftSheet({
+  id,
+  aircraft,
+  nodesByRef,
+  onClose,
+  finding,
+  history,
+  footer,
+}: AircraftSheetProps) {
   const { colors, spacing, radius } = useTheme();
   if (id === null) return null;
-  const callsign = aircraft?.flight?.trim();
+  // Until the feed shows it, the card names the aircraft as it was asked for.
+  const sought = aircraft ? null : finding;
+  const callsign = aircraft ? aircraft.flight?.trim() : sought?.callsign?.trim();
+  const hex = aircraft?.hex ?? sought?.hex ?? id;
   return (
     <View
       pointerEvents="box-none"
@@ -152,7 +253,7 @@ export function AircraftSheet({ id, aircraft, nodesByRef, onClose, footer }: Air
             </ThemedText>
             {/* The hex it flies under now, which a rename changes while the id stays. */}
             <ThemedText variant="mono" color="secondary">
-              {(aircraft?.hex ?? id).toUpperCase()}
+              {hex.toUpperCase()}
             </ThemedText>
           </View>
           <Pressable
@@ -184,11 +285,19 @@ export function AircraftSheet({ id, aircraft, nodesByRef, onClose, footer }: Air
               <SeenBy refs={seenByRefs(aircraft)} nodesByRef={nodesByRef} />
             </DetailRow>
           </View>
+        ) : sought ? (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: spacing.md }}>
+            <ActivityIndicator size="small" color={colors.textSecondary} />
+            <ThemedText variant="body" color="secondary" accessibilityLiveRegion="polite">
+              Finding {callsign || hex.toUpperCase()}…
+            </ThemedText>
+          </View>
         ) : (
           <ThemedText variant="body" color="secondary">
             No longer in view
           </ThemedText>
         )}
+        {history && <HistoryRow history={history} />}
         {footer && (
           <View
             style={{

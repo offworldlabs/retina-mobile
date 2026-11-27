@@ -1,6 +1,13 @@
 import { api, isOffline as deviceIsOffline } from '@/api';
+import {
+  appendFix,
+  mergeTrail,
+  recentPositionsOf,
+  type TrackPoint,
+} from '@/features/aircraft/track';
 
 import {
+  altitudeFeet,
   liveSocketUrl,
   parseFrame,
   reconnectDelay,
@@ -21,6 +28,9 @@ import { createAircraftIdentity } from './identity';
  */
 export type LiveFeedStatus = 'connecting' | 'live' | 'fallback' | 'paused';
 
+/** The trail while no aircraft is tracked: one shared array, so it never reads as a change. */
+export const NO_TRAIL: readonly TrackPoint[] = [];
+
 export type LiveFeedState = {
   /** The aircraft of the last frame by id (identity.ts), which the server's renames keep. */
   aircraft: ReadonlyMap<string, LiveAircraft>;
@@ -38,6 +48,8 @@ export type LiveFeedState = {
    * as it is. Absent before any feed has run, when every key is its own id.
    */
   idFor?: (key: string) => string;
+  /** The tracked aircraft's recent positions (setTracked), oldest first; NO_TRAIL with none. */
+  trail: readonly TrackPoint[];
 };
 
 export type LiveFeedOptions = {
@@ -53,6 +65,12 @@ export type LiveFeed = {
   start(): void;
   stop(): void;
   setBox(box: FeedBox | null): void;
+  /**
+   * The aircraft whose trail the feed keeps, by id; null for none. Only its entries' recent
+   * positions are read. A new aircraft starts a new trail; an id the tracked one now resolves to
+   * is a rename and keeps it.
+   */
+  setTracked(id: string | null): void;
 };
 
 type Frame = NonNullable<ReturnType<typeof parseFrame>>;
@@ -84,7 +102,8 @@ function parseMessage(data: unknown): unknown {
  * reopened on a backoff that only a frame on the new socket resets, so a server that accepts and
  * then closes is asked less and less often. Each frame replaces the aircraft set and calls
  * onUpdate once. Which entries are one aircraft is kept across frames (identity.ts): stop() keeps
- * it, as its keys age out on their own, and a new feed starts with none.
+ * it, as its keys age out on their own, and a new feed starts with none. The tracked aircraft's
+ * trail is kept the same way: stop() keeps it, and setTracked(null) drops it.
  */
 export function createLiveFeed(options: LiveFeedOptions): LiveFeed {
   const {
@@ -123,6 +142,8 @@ export function createLiveFeed(options: LiveFeedOptions): LiveFeed {
   let clipped = false;
   let lastFrameAt: number | null = null;
   let status: LiveFeedStatus = 'paused';
+  let tracked: string | null = null;
+  let trail: readonly TrackPoint[] = NO_TRAIL;
 
   const emit = () =>
     onUpdate({
@@ -133,6 +154,7 @@ export function createLiveFeed(options: LiveFeedOptions): LiveFeed {
       clipped,
       lastFrameAt,
       idFor: identity.idFor,
+      trail,
     });
 
   function currentStatus(): LiveFeedStatus {
@@ -148,11 +170,36 @@ export function createLiveFeed(options: LiveFeedOptions): LiveFeed {
     emit();
   }
 
+  // Extends the trail from the entries that are the tracked aircraft, and reads no other entry's
+  // recent positions, so it costs one aircraft whatever the frame holds. With none of its entries
+  // carrying any, the position it is shown at is added instead.
+  function followTracked(id: string, frame: Frame, now: number): void {
+    const incoming: TrackPoint[] = [];
+    for (let i = 0; i < frame.aircraft.length; i += 1) {
+      if (identity.idFor(frame.aircraft[i].hex) !== id) continue;
+      for (const point of recentPositionsOf(frame.recentPositions[i])) incoming.push(point);
+    }
+    if (incoming.length > 0) {
+      trail = mergeTrail(trail, incoming);
+      return;
+    }
+    const shown = aircraft.get(id);
+    if (shown) {
+      const fix = { lat: shown.lat, lon: shown.lon, altFt: altitudeFeet(shown) };
+      trail = appendFix(trail, fix, now / 1000);
+    }
+  }
+
   function takeFrame(frame: Frame): void {
     lastFrameAt = Date.now();
     aircraft = identity.resolve(frame.aircraft, lastFrameAt);
     collection = toFeatureCollection(aircraft);
     clipped = frame.clipped;
+    if (tracked !== null) {
+      // The id it is shown under now, which a merge in this frame may have changed.
+      tracked = identity.idFor(tracked);
+      followTracked(tracked, frame, lastFrameAt);
+    }
     status = currentStatus();
     emit();
   }
@@ -367,6 +414,16 @@ export function createLiveFeed(options: LiveFeedOptions): LiveFeed {
         settleTimer = null;
         sendBox();
       }, VIEWPORT_SETTLE_MS);
+    },
+
+    setTracked(id) {
+      if (id === tracked) return;
+      const renamed =
+        id !== null && tracked !== null && identity.idFor(id) === identity.idFor(tracked);
+      tracked = id;
+      if (renamed || trail === NO_TRAIL) return;
+      trail = NO_TRAIL;
+      emit();
     },
   };
 }

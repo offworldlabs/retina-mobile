@@ -2,6 +2,7 @@
 import { basemapStyle } from '../basemap';
 import { feedBoxOf, parseFrame, toFeatureCollection } from '../feed';
 import { createAircraftIdentity } from '../identity';
+import { finishMapFocus, pendingMapFocus, requestMapFocus } from '../link';
 import { createLiveFeed, type LiveFeedState } from '../liveFeed';
 import { motionPlan, startGlide, stepGlide, takeFix, type MotionPlan } from '../motion';
 import { nearestFeature } from '../pick';
@@ -237,6 +238,85 @@ test('keeps an aircraft under one id across the renames the server makes', () =>
   ]);
   expect(send([other])).toEqual([['4876ba', '4876ba']]);
   feed.stop();
+});
+
+test('keeps recent positions for the tracked aircraft only, through a rename, afresh for another', () => {
+  jest.useFakeTimers();
+  const states: LiveFeedState[] = [];
+  const feed = createLiveFeed({
+    apiBaseUrl: 'https://api.example.com',
+    onUpdate: (state) => states.push(state),
+    WebSocketImpl: FakeSocket as unknown as typeof WebSocket,
+    fetchFrame: () => new Promise(() => {}),
+    isOffline: () => false,
+  });
+  feed.setBox([50, 10, 52, 14]);
+  feed.start();
+  const socket = FakeSocket.made[FakeSocket.made.length - 1];
+  socket.onopen?.();
+  const trail = () => states[states.length - 1].trail;
+  const send = (aircraft: object[]) => {
+    socket.onmessage?.({ data: JSON.stringify({ aircraft }) });
+    return trail();
+  };
+  const other = (ts: number) => ({
+    hex: '2df10f',
+    lat: 50,
+    lon: 11,
+    recent_positions: [[49.9, 11, 9000, ts]],
+  });
+
+  // Asked for by its solve hex, shown under its transponder's.
+  feed.setTracked('mn811cddc02e');
+  const solve = {
+    hex: 'mn811cddc02e',
+    adsb_hex: 'df5341',
+    lat: 51.01,
+    lon: 12,
+    recent_positions: [
+      [51.01, 12, 3000, 101],
+      [51, 12, 3000, 100],
+    ],
+  };
+  expect(send([other(100), solve])).toEqual([
+    [51, 12, 3000, 100],
+    [51.01, 12, 3000, 101],
+  ]);
+  feed.setTracked(states[states.length - 1].idFor?.('mn811cddc02e') ?? null);
+  const renamed = {
+    hex: 'mn5c0ffee0001',
+    predecessor_hex: 'mn811cddc02e',
+    lat: 51.03,
+    lon: 12,
+    recent_positions: [
+      [51.02, 12, 3100, 102],
+      [51.03, 12, 3200, 103],
+    ],
+  };
+  expect(send([other(102), renamed])).toEqual([
+    [51, 12, 3000, 100],
+    [51.01, 12, 3000, 101],
+    [51.02, 12, 3100, 102],
+    [51.03, 12, 3200, 103],
+  ]);
+
+  feed.setTracked('2df10f');
+  expect(trail()).toEqual([]);
+  expect(send([other(104), renamed])).toEqual([[49.9, 11, 9000, 104]]);
+  feed.stop();
+});
+
+test('applies the newest waiting map focus request, once', () => {
+  requestMapFocus({ hex: 'abc123', lat: 10, lon: 20, callsign: 'TST1' });
+  requestMapFocus({ hex: 'def456', lat: 11, lon: 21, callsign: null });
+  const newest = pendingMapFocus();
+  expect(newest).toMatchObject({ hex: 'def456', lat: 11, lon: 21, callsign: null });
+
+  // Finishing the replaced request leaves the newer one waiting.
+  finishMapFocus((newest?.seq ?? 0) - 1);
+  expect(pendingMapFocus()).toBe(newest);
+  finishMapFocus(newest?.seq ?? 0);
+  expect(pendingMapFocus()).toBeNull();
 });
 
 test('keeps the fresher of two entries for one aircraft, the solve on a tie, both when far apart', () => {
