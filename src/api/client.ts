@@ -215,6 +215,9 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
     try {
       const { data } = await request(method, url, {
         ...rest,
+        // After the caller's options, so no call can turn cookies back on: the app signs in with
+        // its bearer token only, and Expo's fetch sends and keeps cookies unless told 'omit'.
+        credentials: 'omit',
         signal: controller.signal,
         fetch: send,
       });

@@ -1,7 +1,7 @@
 /// <reference types="jest" />
 import { apiBaseUrl, resolveApiBaseUrl } from '../../config/env';
 import { createApiClient, setAuthTokenProvider, setSessionEndedHandler } from '../client';
-import { HttpError, UnauthorizedError } from '../errors';
+import { HttpError, TimeoutError, UnauthorizedError } from '../errors';
 import { fetchLeaderboard } from '../leaderboard';
 
 // The app config the native build embeds; jest-expo's stand-in carries no `extra`.
@@ -141,4 +141,19 @@ test('ends the session on a 401 once, and only for the token still in use', asyn
 
   setAuthTokenProvider(null);
   setSessionEndedHandler(null);
+});
+
+test('sends every request without cookies, failed and timed-out ones included', async () => {
+  const { client, requests } = stubbedClient((request) => {
+    if (request.url.endsWith('/me')) return json({ detail: 'Server error' }, 500);
+    if (request.url.endsWith('/sessions')) {
+      return new Promise<Response>((_, reject) => request.signal.addEventListener('abort', reject));
+    }
+    return json({ leaderboard: [], total: 0 });
+  });
+  await client.get('/api/radar/leaderboard', { credentials: 'include' });
+  await expect(client.get('/api/auth/me')).rejects.toBeInstanceOf(HttpError);
+  const timedOut = client.get('/api/auth/me/sessions', { timeoutMs: 1 });
+  await expect(timedOut).rejects.toBeInstanceOf(TimeoutError);
+  expect(requests.map((request) => request.credentials)).toEqual(['omit', 'omit', 'omit']);
 });
